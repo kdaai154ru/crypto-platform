@@ -116,6 +116,18 @@ export class ExchangeConnector {
 
   stopStream(key: string) { this.activeStreams.delete(key); }
 
+  /**
+   * Останавливает все стримы для конкретного символа.
+   * Удаляет из activeStreams ключи вида:
+   *   ticker:BTC/USDT, trades:BTC/USDT, ohlcv:BTC/USDT:1m, ...
+   */
+  stopSymbol(symbol: string): void {
+    for (const key of this.activeStreams) {
+      if (key.includes(symbol)) this.activeStreams.delete(key);
+    }
+    this.logger.debug({ id: this.id, symbol }, 'stopSymbol');
+  }
+
   stopAll() {
     this.activeStreams.clear();
     try { this.ex?.close?.(); } catch {}
