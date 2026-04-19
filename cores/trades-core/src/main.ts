@@ -1,3 +1,4 @@
+// cores/trades-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema, CHSchema } from '@crypto-platform/config';
 import Valkey from 'iovalkey';
@@ -37,8 +38,18 @@ sub.on('message', (_ch: string, msg: string) => {
   try {
     const trade = JSON.parse(msg) as NormalizedTrade;
     processor.process(trade);
-    if (trade.isLarge) pub.publish('trades:large', msg);
-    else pub.publish('trades:stream', msg);
+
+    // ВСЕ сделки публикуются в trades:stream —
+    // фанаут ValkeyFanout использует этот канал для передачи
+    // клиентам по подписке `trades:{symbol}`.
+    pub.publish('trades:stream', msg);
+
+    // Крупные сделки дополнительно публикуются в trades:large —
+    // клиенты, подписанные на `trades:large`, получат все крупные сделки
+    // по всем парам сразу.
+    if (trade.isLarge) {
+      pub.publish('trades:large', msg);
+    }
   } catch (e) { log.error(e); }
 });
 
