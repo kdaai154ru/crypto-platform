@@ -20,6 +20,9 @@
       "esbuild",
       "@parcel/watcher",
       "ccxt"
-    ]
+    ],
+    "overrides": {
+      "iovalkey": "^0.4.0"
+    }
   }
 }
