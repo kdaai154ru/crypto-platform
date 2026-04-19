@@ -1,6 +1,5 @@
 // cores/exchange-core/src/connector.ts
-// ccxt@4.4.x не экспортирует ccxt/pro в package.json exports.
-// Pro-классы живут в ccxt/dist/pro/<exchange>.js — грузим через dynamic import.
+// ccxt@4.4.x экспортирует только "." — pro-классы доступны через import('ccxt').then(m => m.default.pro)
 import type { ExchangeId } from '@crypto-platform/types';
 import type { Logger } from '@crypto-platform/logger';
 import { CircuitBreaker } from '@crypto-platform/utils';
@@ -14,31 +13,19 @@ export type CandleCallback  = (candle: any, symbol: string, tf: string, exchange
 const TRADES_LIMIT  = 50;
 const CANDLES_LIMIT = 10;
 
-/**
- * Загружает pro-класс биржи из ccxt/dist/pro/<id>.js
- * через dynamic import, обходя устаревший exports map ccxt@4.4.x
- */
-async function loadProExchange(id: string): Promise<new (opts?: object) => any> {
-  // Пробуем ccxt/dist/pro/<id> (есть в v4.4+)
-  try {
-    const mod = await import(`ccxt/dist/pro/${id}.js`);
-    const ExClass = mod.default ?? mod[id];
-    if (typeof ExClass === 'function') return ExClass;
-  } catch { /* fallback ниже */ }
+// Кэшируем pro-неймспейс чтобы не импортировать ccxt на каждый connect()
+let _proNs: Record<string, new (o?: object) => any> | null = null;
 
-  // Fallback: основной ccxt (без WebSocket, только REST) — не должно доходиться
-  const ccxt = await import('ccxt');
-  const ExClass = (ccxt as any)[id] ?? (ccxt as any).default?.[id];
-  if (typeof ExClass === 'function') {
-    // Проверяем наличие watchTicker (есть только в pro)
-    const inst = new ExClass();
-    if (typeof inst.watchTicker !== 'function') {
-      throw new Error(`ccxt.${id} does not support WebSocket streams — install ccxt@4.4+ with pro`);
-    }
-    return ExClass;
+async function getProNamespace(): Promise<Record<string, new (o?: object) => any>> {
+  if (_proNs) return _proNs;
+  const mod = await import('ccxt');
+  const ccxt = mod.default ?? mod;
+  const pro = (ccxt as any).pro;
+  if (!pro || typeof pro !== 'object') {
+    throw new Error('ccxt.pro namespace not found — upgrade ccxt to v4.4+');
   }
-
-  throw new Error(`Cannot load ccxt pro class for exchange: ${id}`);
+  _proNs = pro as Record<string, new (o?: object) => any>;
+  return _proNs;
 }
 
 export class ExchangeConnector {
@@ -68,7 +55,9 @@ export class ExchangeConnector {
       try { await this.ex.close(); } catch {}
       this.ex = null;
     }
-    const ExClass = await loadProExchange(this.id as string);
+    const pro = await getProNamespace();
+    const ExClass = pro[this.id as string];
+    if (!ExClass) throw new Error(`Unknown exchange: ${this.id}`);
     this.ex = new ExClass({ enableRateLimit: true, timeout: 30_000, newUpdates: true });
     this.logger.info({ id: this.id }, 'connected');
   }
