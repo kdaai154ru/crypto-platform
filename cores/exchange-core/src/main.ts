@@ -1,0 +1,88 @@
+// cores/exchange-core/src/main.ts
+import { createLogger } from '@crypto-platform/logger';
+import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
+import Valkey from 'iovalkey';
+import { z } from 'zod';
+import { ExchangeConnector } from './connector.js';
+import type { ExchangeId, Timeframe } from '@crypto-platform/types';
+
+const DEFAULT_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx'];
+const env = loadEnv(BaseSchema.merge(ValkeySchema).merge(z.object({ EXCHANGE_LIST: z.string().optional() })));
+const log = createLogger('exchange-core');
+
+const VALKEY_OPTS = {
+  host: env.VALKEY_HOST, port: env.VALKEY_PORT,
+  retryStrategy: (times: number) => Math.min(times * 100, 3000),
+  keepAlive: 10000, enableOfflineQueue: true,
+};
+
+const valkey = new Valkey(VALKEY_OPTS);
+const sub    = new Valkey(VALKEY_OPTS);
+const hb     = new Valkey(VALKEY_OPTS);
+
+valkey.on('error', (e: Error) => log.warn({ err: e.message }, 'valkey error'));
+sub.on('error',    (e: Error) => log.warn({ err: e.message }, 'sub error'));
+hb.on('error',     (e: Error) => log.warn({ err: e.message }, 'hb error'));
+
+const exList: ExchangeId[] =
+  env.EXCHANGE_LIST?.split(',').map(s => s.trim() as ExchangeId) ?? DEFAULT_EXCHANGES;
+
+const connectors = new Map<ExchangeId, ExchangeConnector>();
+
+async function start(): Promise<void> {
+  for (const id of exList) {
+    const conn = new ExchangeConnector(
+      id, log,
+      (t, ex)          => valkey.publish('raw:trades', JSON.stringify({ ...t, exchange: ex })),
+      (tk, ex)         => valkey.publish('raw:ticker', JSON.stringify({ ...tk, exchange: ex })),
+      (c, sym, tf, ex) => valkey.publish('raw:candle', JSON.stringify({ c, symbol: sym, tf, exchange: ex })),
+    );
+    try { await conn.connect(); connectors.set(id, conn); }
+    catch (e) { log.error({ id, err: e }, 'connect failed'); }
+  }
+
+  sub.subscribe('stream:start', 'stream:stop', (e) => { if (e) log.error(e); });
+
+  sub.on('message', (ch: string, msg: string) => {
+    try {
+      const { symbol, channels } = JSON.parse(msg) as { symbol: string; channels: string[] };
+      if (ch === 'stream:start') {
+        const chs: string[] = channels ?? [];
+        const needTicker = chs.length === 0 || chs.some(c => c.startsWith('ticker:'));
+        const needTrades = chs.length === 0 || chs.some(c => c.startsWith('trades:'));
+        const needOi     = chs.some(c => c.startsWith('oi:'));
+        const needFund   = chs.some(c => c.startsWith('funding:'));
+        const ohlcvTfs   = [...new Set(chs.filter(c => c.startsWith('ohlcv:')).map(c => (c.split(':')[2] ?? '1m') as Timeframe))];
+
+        for (const [, conn] of connectors) {
+          if (needTicker) conn.watchTicker(symbol).catch(e => log.warn({ symbol, err: (e as Error).message }, 'watchTicker failed'));
+          if (needTrades) conn.watchTrades(symbol).catch(e => log.warn({ symbol, err: (e as Error).message }, 'watchTrades failed'));
+          for (const tf of ohlcvTfs) conn.watchOHLCV(symbol, tf).catch(e => log.warn({ symbol, tf, err: (e as Error).message }, 'watchOHLCV failed'));
+          if (needOi)   (conn as any).watchOI?.(symbol)?.catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchOI failed'));
+          if (needFund) (conn as any).watchFunding?.(symbol)?.catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchFunding failed'));
+        }
+        log.info({ symbol, chs }, 'streams started');
+      } else if (ch === 'stream:stop') {
+        for (const [, conn] of connectors) conn.stopAll();
+        log.info({ symbol }, 'streams stopped');
+      }
+    } catch (e) { log.error(e); }
+  });
+
+  setInterval(async () => {
+    await hb.set('heartbeat:exchange-core', Date.now().toString(), 'EX', 30);
+    const states = [...connectors.entries()].map(([id, conn]) => ({
+      id, status: 'online',
+      latencyMs: conn.latencyMs,
+      lastMessageAt: conn.lastMessageAt,
+      restarts: conn.restarts,
+      streamCount: conn.streamCount(),
+    }));
+    await hb.set('system:status:exchanges', JSON.stringify(states), 'EX', 30);
+  }, 5_000);
+
+  process.on('SIGTERM', () => { connectors.forEach(c => c.stopAll()); valkey.quit(); sub.quit(); hb.quit(); process.exit(0); });
+  log.info({ exchanges: exList.length }, 'exchange-core started');
+}
+
+start().catch(e => { log.fatal(e); process.exit(1); });

@@ -1,0 +1,35 @@
+{
+  "name": "@crypto-platform/exchange-core",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@crypto-platform/config": "workspace:*",
+    "@crypto-platform/logger": "workspace:*",
+    "@crypto-platform/types": "workspace:*",
+    "@crypto-platform/utils": "workspace:*",
+    "ccxt": "^4.4.82",
+    "iovalkey": "^0.3.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  }
+}
