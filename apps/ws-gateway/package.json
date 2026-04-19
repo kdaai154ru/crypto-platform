@@ -1,0 +1,26 @@
+{
+  "name": "@crypto-platform/ws-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@crypto-platform/config": "workspace:*",
+    "@crypto-platform/logger": "workspace:*",
+    "@crypto-platform/types": "workspace:*",
+    "iovalkey": "^0.3.3",
+    "nanoid": "^5.1.9",
+    "uWebSockets.js": "uNetworking/uWebSockets.js#v20.52.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
