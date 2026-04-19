@@ -63,7 +63,15 @@ async function start(): Promise<void> {
         }
         log.info({ symbol, chs }, 'streams started');
       } else if (ch === 'stream:stop') {
-        for (const [, conn] of connectors) conn.stopAll();
+        // Останавливаем стримы только для конкретного символа,
+        // а не все соединения сразу.
+        if (!symbol) {
+          log.warn('stream:stop received without symbol — ignoring');
+          return;
+        }
+        for (const [, conn] of connectors) {
+          conn.stopSymbol(symbol);
+        }
         log.info({ symbol }, 'streams stopped');
       }
     } catch (e) { log.error(e); }
