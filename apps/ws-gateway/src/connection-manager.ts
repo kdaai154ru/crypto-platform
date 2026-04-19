@@ -1,21 +1,25 @@
 // apps/ws-gateway/src/connection-manager.ts
+import type { WebSocket } from 'uWebSockets.js'
 
-/** Минимальный интерфейс uWS WebSocket-объекта, который нам нужен */
-export interface UwsSocket {
-  send(message: string): boolean
-}
+/**
+ * uWS WebSocket.send() возвращает number:
+ *   0 = BACKPRESSURE (буфер переполнен — соединение живо, но перегружено)
+ *   1 = SUCCESS
+ *   2 = DROPPED   (соединение закрыто)
+ */
+export const UWS_SEND_DROPPED = 2
 
 export interface WsClient {
   id: string
   subscriptions: Set<string>
   lastPing: number
-  ws: UwsSocket
+  ws: WebSocket<unknown>
 }
 
 export class ConnectionManager {
   private clients = new Map<string, WsClient>()
 
-  add(id: string, ws: UwsSocket): WsClient {
+  add(id: string, ws: WebSocket<unknown>): WsClient {
     const c: WsClient = { id, subscriptions: new Set(), lastPing: Date.now(), ws }
     this.clients.set(id, c)
     return c
