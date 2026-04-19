@@ -8,6 +8,7 @@ export interface PairState {
   symbol:   string
   refCount: number
   viewers:  Set<string>
+  channels: string[]
   status:   PairStatus
   idleTimer?: ReturnType<typeof setTimeout>
   startedAt?: number
@@ -30,8 +31,12 @@ export class SubscriptionManager extends EventEmitter {
   subscribe(viewerId: string, symbol: string, channels: string[]): void {
     let state = this.pairs.get(symbol)
     if (!state) {
-      state = { symbol, refCount: 0, viewers: new Set(), status: 'stopped' }
+      state = { symbol, refCount: 0, viewers: new Set(), channels: [], status: 'stopped' }
       this.pairs.set(symbol, state)
+    }
+    // Обновляем список каналов если передан
+    if (channels.length > 0) {
+      state.channels = [...new Set([...state.channels, ...channels])]
     }
     if (!state.viewers.has(viewerId)) {
       state.viewers.add(viewerId)
@@ -41,7 +46,7 @@ export class SubscriptionManager extends EventEmitter {
     if (state.status === 'stopped' || state.status === 'idle') {
       state.status = 'active'; state.startedAt = Date.now()
       this.log.info({ symbol, refCount: state.refCount }, 'START_STREAM')
-      this.emit('start_stream', symbol, channels)
+      this.emit('start_stream', symbol, state.channels)
     } else {
       this.log.debug({ symbol, refCount: state.refCount }, 'fanout only')
     }
@@ -68,4 +73,14 @@ export class SubscriptionManager extends EventEmitter {
 
   getState(symbol: string): PairState|undefined { return this.pairs.get(symbol) }
   getActivePairCount(): number { return [...this.pairs.values()].filter(s=>s.status==='active').length }
+
+  /**
+   * Возвращает все активные пары с их каналами —
+   * используется для replay stream:start после рестарта exchange-core.
+   */
+  getActivePairs(): Array<{ symbol: string; channels: string[] }> {
+    return [...this.pairs.values()]
+      .filter(s => s.status === 'active')
+      .map(s => ({ symbol: s.symbol, channels: s.channels }))
+  }
 }
