@@ -2,7 +2,6 @@
 "use strict";
 const path = require('path');
 
-// Корень монорепозитория: два уровня вверх от infra/pm2/
 const ROOT = path.resolve(__dirname, '..', '..');
 
 const base = {
@@ -38,7 +37,11 @@ module.exports = {
       max_restarts:       20,
       max_memory_restart: '2G',
       listen_timeout:     15000,
-      node_args:          '--max-old-space-size=2048',
+      // node_args игнорируется PM2 на Windows в fork-режиме — передаём через NODE_OPTIONS
+      env: {
+        NODE_ENV:     'production',
+        NODE_OPTIONS: '--max-old-space-size=2048',
+      },
     },
     {
       ...base,
