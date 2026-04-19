@@ -15,7 +15,7 @@
     "@crypto-platform/logger": "workspace:*",
     "@crypto-platform/config": "workspace:*",
     "@crypto-platform/metrics": "workspace:*",
-    "iovalkey": "^0.3.3",
+    "ioredis": "^5.6.1",
     "fastify": "^5.4.0",
     "zod": "^3.25.76"
   },
