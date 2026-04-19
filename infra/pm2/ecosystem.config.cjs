@@ -6,11 +6,13 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..', '..');
 
 const base = {
-  cwd:                     ROOT,
-  autorestart:             true,
+  cwd:                       ROOT,
+  instances:                 1,        // ТОЛЬКО 1 экземпляр на процесс
+  exec_mode:                 'fork',
+  autorestart:               true,
   exp_backoff_restart_delay: 100,
-  max_restarts:            10,
-  max_memory_restart:      '512M',
+  max_restarts:              10,
+  max_memory_restart:        '512M',
   env: { NODE_ENV: 'production' },
   error_file: path.join(ROOT, 'logs', 'pm2-error.log'),
   out_file:   path.join(ROOT, 'logs', 'pm2-out.log'),
@@ -31,9 +33,12 @@ module.exports = {
     },
     {
       ...base,
-      name:         'exchange-core',
-      script:       path.join(ROOT, 'cores/exchange-core/dist/main.js'),
-      max_restarts: 20,
+      name:           'exchange-core',
+      script:         path.join(ROOT, 'cores/exchange-core/dist/main.js'),
+      max_restarts:   20,
+      // Даём exchange-core время подключиться к Valkey и биржам перед регистрацией
+      // в orchestrator — чтобы stream:start не приходил раньше готовности
+      listen_timeout: 15000,
     },
     {
       ...base,
@@ -62,8 +67,8 @@ module.exports = {
     },
     {
       ...base,
-      name:              'screener-core',
-      script:            path.join(ROOT, 'cores/screener-core/dist/main.js'),
+      name:               'screener-core',
+      script:             path.join(ROOT, 'cores/screener-core/dist/main.js'),
       max_memory_restart: '1G',
     },
     {
