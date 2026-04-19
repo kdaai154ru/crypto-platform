@@ -7,7 +7,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 
 const base = {
   cwd:                       ROOT,
-  instances:                 1,        // ТОЛЬКО 1 экземпляр на процесс
+  instances:                 1,
   exec_mode:                 'fork',
   autorestart:               true,
   exp_backoff_restart_delay: 100,
@@ -33,12 +33,12 @@ module.exports = {
     },
     {
       ...base,
-      name:           'exchange-core',
-      script:         path.join(ROOT, 'cores/exchange-core/dist/main.js'),
-      max_restarts:   20,
-      // Даём exchange-core время подключиться к Valkey и биржам перед регистрацией
-      // в orchestrator — чтобы stream:start не приходил раньше готовности
-      listen_timeout: 15000,
+      name:               'exchange-core',
+      script:             path.join(ROOT, 'cores/exchange-core/dist/main.js'),
+      max_restarts:       20,
+      max_memory_restart: '2G',
+      listen_timeout:     15000,
+      node_args:          '--max-old-space-size=2048',
     },
     {
       ...base,

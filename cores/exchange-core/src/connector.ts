@@ -1,5 +1,6 @@
 // cores/exchange-core/src/connector.ts
-// ccxt@4.4.x экспортирует только "." — pro-классы доступны через import('ccxt').then(m => m.default.pro)
+// Статический top-level import — ccxt загружается один раз при старте процесса
+import ccxt from 'ccxt';
 import type { ExchangeId } from '@crypto-platform/types';
 import type { Logger } from '@crypto-platform/logger';
 import { CircuitBreaker } from '@crypto-platform/utils';
@@ -10,23 +11,14 @@ export type TradeCallback   = (trade: any,  exchange: ExchangeId) => void;
 export type TickerCallback  = (ticker: any, exchange: ExchangeId) => void;
 export type CandleCallback  = (candle: any, symbol: string, tf: string, exchange: ExchangeId) => void;
 
+const pro = (ccxt as any).pro as Record<string, new (o?: object) => any>;
+
+if (!pro || typeof pro !== 'object') {
+  throw new Error('ccxt.pro namespace not found — upgrade ccxt to v4.4+');
+}
+
 const TRADES_LIMIT  = 50;
 const CANDLES_LIMIT = 10;
-
-// Кэшируем pro-неймспейс чтобы не импортировать ccxt на каждый connect()
-let _proNs: Record<string, new (o?: object) => any> | null = null;
-
-async function getProNamespace(): Promise<Record<string, new (o?: object) => any>> {
-  if (_proNs) return _proNs;
-  const mod = await import('ccxt');
-  const ccxt = mod.default ?? mod;
-  const pro = (ccxt as any).pro;
-  if (!pro || typeof pro !== 'object') {
-    throw new Error('ccxt.pro namespace not found — upgrade ccxt to v4.4+');
-  }
-  _proNs = pro as Record<string, new (o?: object) => any>;
-  return _proNs;
-}
 
 export class ExchangeConnector {
   private ex!: any;
@@ -55,7 +47,6 @@ export class ExchangeConnector {
       try { await this.ex.close(); } catch {}
       this.ex = null;
     }
-    const pro = await getProNamespace();
     const ExClass = pro[this.id as string];
     if (!ExClass) throw new Error(`Unknown exchange: ${this.id}`);
     this.ex = new ExClass({ enableRateLimit: true, timeout: 30_000, newUpdates: true });
