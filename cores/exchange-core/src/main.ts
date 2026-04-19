@@ -29,6 +29,26 @@ const exList: ExchangeId[] =
 
 const connectors = new Map<ExchangeId, ExchangeConnector>();
 
+function handleStreamStart(symbol: string, channels: string[]): void {
+  const chs: string[] = channels ?? [];
+  const needTicker = chs.length === 0 || chs.some(c => c.startsWith('ticker:'));
+  const needTrades = chs.length === 0 || chs.some(c => c.startsWith('trades:'));
+  const needOi     = chs.some(c => c.startsWith('oi:'));
+  const needFund   = chs.some(c => c.startsWith('funding:'));
+  const ohlcvTfs   = [...new Set(
+    chs.filter(c => c.startsWith('ohlcv:')).map(c => (c.split(':')[2] ?? '1m') as Timeframe)
+  )];
+
+  for (const [, conn] of connectors) {
+    if (needTicker) conn.watchTicker(symbol).catch(e => log.warn({ symbol, err: (e as Error).message }, 'watchTicker failed'));
+    if (needTrades) conn.watchTrades(symbol).catch(e => log.warn({ symbol, err: (e as Error).message }, 'watchTrades failed'));
+    for (const tf of ohlcvTfs) conn.watchOHLCV(symbol, tf).catch(e => log.warn({ symbol, tf, err: (e as Error).message }, 'watchOHLCV failed'));
+    if (needOi)   (conn as any).watchOI?.(symbol)?.catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchOI failed'));
+    if (needFund) (conn as any).watchFunding?.(symbol)?.catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchFunding failed'));
+  }
+  log.info({ symbol, chs }, 'streams started');
+}
+
 async function start(): Promise<void> {
   for (const id of exList) {
     const conn = new ExchangeConnector(
@@ -41,41 +61,40 @@ async function start(): Promise<void> {
     catch (e) { log.error({ id, err: e }, 'connect failed'); }
   }
 
-  sub.subscribe('stream:start', 'stream:stop', (e) => { if (e) log.error(e); });
+  sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e) => { if (e) log.error(e); });
 
   sub.on('message', (ch: string, msg: string) => {
     try {
-      const { symbol, channels } = JSON.parse(msg) as { symbol: string; channels: string[] };
-      if (ch === 'stream:start') {
-        const chs: string[] = channels ?? [];
-        const needTicker = chs.length === 0 || chs.some(c => c.startsWith('ticker:'));
-        const needTrades = chs.length === 0 || chs.some(c => c.startsWith('trades:'));
-        const needOi     = chs.some(c => c.startsWith('oi:'));
-        const needFund   = chs.some(c => c.startsWith('funding:'));
-        const ohlcvTfs   = [...new Set(chs.filter(c => c.startsWith('ohlcv:')).map(c => (c.split(':')[2] ?? '1m') as Timeframe))];
+      const parsed = JSON.parse(msg) as { symbol: string; channels: string[]; pairs?: Array<{ symbol: string; channels: string[] }> };
 
-        for (const [, conn] of connectors) {
-          if (needTicker) conn.watchTicker(symbol).catch(e => log.warn({ symbol, err: (e as Error).message }, 'watchTicker failed'));
-          if (needTrades) conn.watchTrades(symbol).catch(e => log.warn({ symbol, err: (e as Error).message }, 'watchTrades failed'));
-          for (const tf of ohlcvTfs) conn.watchOHLCV(symbol, tf).catch(e => log.warn({ symbol, tf, err: (e as Error).message }, 'watchOHLCV failed'));
-          if (needOi)   (conn as any).watchOI?.(symbol)?.catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchOI failed'));
-          if (needFund) (conn as any).watchFunding?.(symbol)?.catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchFunding failed'));
+      if (ch === 'stream:start') {
+        handleStreamStart(parsed.symbol, parsed.channels);
+
+      } else if (ch === 'stream:replay') {
+        // subscription-core отвечает на exchange:ready списком всех активных пар
+        const pairs = parsed.pairs ?? [];
+        log.info({ count: pairs.length }, 'replaying streams after reconnect');
+        for (const { symbol, channels } of pairs) {
+          handleStreamStart(symbol, channels);
         }
-        log.info({ symbol, chs }, 'streams started');
+
       } else if (ch === 'stream:stop') {
-        // Останавливаем стримы только для конкретного символа,
-        // а не все соединения сразу.
-        if (!symbol) {
+        if (!parsed.symbol) {
           log.warn('stream:stop received without symbol — ignoring');
           return;
         }
         for (const [, conn] of connectors) {
-          conn.stopSymbol(symbol);
+          conn.stopSymbol(parsed.symbol);
         }
-        log.info({ symbol }, 'streams stopped');
+        log.info({ symbol: parsed.symbol }, 'streams stopped');
       }
     } catch (e) { log.error(e); }
   });
+
+  // Сообщаем subscription-core что мы готовы принимать стримы.
+  // Он ответит в stream:replay со всеми активными парами.
+  log.info('publishing exchange:ready');
+  await valkey.publish('exchange:ready', JSON.stringify({ exchanges: exList }));
 
   setInterval(async () => {
     await hb.set('heartbeat:exchange-core', Date.now().toString(), 'EX', 30);
