@@ -1,6 +1,7 @@
 // apps/ws-gateway/src/valkey-fanout.ts
 import Valkey from 'iovalkey'
 import type { ConnectionManager } from './connection-manager.js'
+import { UWS_SEND_DROPPED } from './connection-manager.js'
 import type { Logger } from '@crypto-platform/logger'
 
 /**
@@ -51,12 +52,13 @@ export class ValkeyFanout {
       if (!clients.length) return
       const out = JSON.stringify({ channel: wsChannel, data })
 
-      // uWS.send() синхронно и возвращает false при закрытом соединении,
-      // не бросая исключение. try/catch здесь был бы бесполезен.
+      // uWS.send() возвращает number:
+      //   0 = BACKPRESSURE, 1 = SUCCESS, 2 = DROPPED (соединение закрыто)
+      // Исключения не бросает — try/catch был бесполезен.
       const dead: string[] = []
       for (const c of clients) {
-        const ok = c.ws.send(out)
-        if (ok === false) dead.push(c.id)
+        const result = c.ws.send(out)
+        if (result === UWS_SEND_DROPPED) dead.push(c.id)
       }
       for (const id of dead) {
         this.log.debug({ id }, 'removing dead client')
