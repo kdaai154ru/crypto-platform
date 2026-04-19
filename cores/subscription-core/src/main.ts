@@ -27,7 +27,21 @@ const manager = new SubscriptionManager(log, 60_000);
 manager.on('start_stream', (sym: string, ch: string[]) => pub.publish('stream:start', JSON.stringify({ symbol: sym, channels: ch })));
 manager.on('stop_stream',  (sym: string)                => pub.publish('stream:stop',  JSON.stringify({ symbol: sym })));
 
-sub.subscribe('sub:request', 'sub:release', 'module:online', (e: unknown) => { if (e) log.error(e); });
+/**
+ * Отвечаем на exchange:ready одним сообщением stream:replay со всеми
+ * активными парами. exchange-core обрабатывает их все сразу.
+ */
+function replayToExchange(): void {
+  const active = manager.getActivePairs();
+  if (active.length === 0) {
+    log.info('exchange:ready received, no active pairs to replay');
+    return;
+  }
+  log.info({ count: active.length }, 'exchange:ready — sending stream:replay');
+  pub.publish('stream:replay', JSON.stringify({ pairs: active }));
+}
+
+sub.subscribe('sub:request', 'sub:release', 'exchange:ready', (e: unknown) => { if (e) log.error(e); });
 
 sub.on('message', (ch: string, msg: string) => {
   try {
@@ -37,22 +51,9 @@ sub.on('message', (ch: string, msg: string) => {
     } else if (ch === 'sub:release') {
       const { viewerId, symbol } = JSON.parse(msg);
       manager.unsubscribe(viewerId, symbol);
-    } else if (ch === 'module:online') {
-      // exchange-core перезапустился — переотправляем stream:start для всех
-      // активных пар чтобы он не пропустил подписки сделанные до его старта.
-      const { id } = JSON.parse(msg) as { id: string };
-      if (id === 'exchange-core') {
-        const active = manager.getActivePairs();
-        if (active.length === 0) return;
-        log.info({ count: active.length }, 'exchange-core online: replaying stream:start for active pairs');
-        // Небольшая задержка, чтобы exchange-core успел подписаться на stream:start
-        setTimeout(() => {
-          for (const { symbol, channels } of active) {
-            pub.publish('stream:start', JSON.stringify({ symbol, channels }));
-            log.info({ symbol }, 'replayed stream:start');
-          }
-        }, 2000);
-      }
+    } else if (ch === 'exchange:ready') {
+      // exchange-core запустился/перезапустился и готов принимать стримы
+      replayToExchange();
     }
   } catch (e) { log.error(e); }
 });
