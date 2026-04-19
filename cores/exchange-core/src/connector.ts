@@ -1,6 +1,6 @@
 // cores/exchange-core/src/connector.ts
-// ccxt v4 содержит pro-стримы прямо в основном пакете через ccxt/pro
-import * as ccxtpro from 'ccxt/pro';
+// ccxt@4.4.x не экспортирует ccxt/pro в package.json exports.
+// Pro-классы живут в ccxt/dist/pro/<exchange>.js — грузим через dynamic import.
 import type { ExchangeId } from '@crypto-platform/types';
 import type { Logger } from '@crypto-platform/logger';
 import { CircuitBreaker } from '@crypto-platform/utils';
@@ -14,15 +14,42 @@ export type CandleCallback  = (candle: any, symbol: string, tf: string, exchange
 const TRADES_LIMIT  = 50;
 const CANDLES_LIMIT = 10;
 
+/**
+ * Загружает pro-класс биржи из ccxt/dist/pro/<id>.js
+ * через dynamic import, обходя устаревший exports map ccxt@4.4.x
+ */
+async function loadProExchange(id: string): Promise<new (opts?: object) => any> {
+  // Пробуем ccxt/dist/pro/<id> (есть в v4.4+)
+  try {
+    const mod = await import(`ccxt/dist/pro/${id}.js`);
+    const ExClass = mod.default ?? mod[id];
+    if (typeof ExClass === 'function') return ExClass;
+  } catch { /* fallback ниже */ }
+
+  // Fallback: основной ccxt (без WebSocket, только REST) — не должно доходиться
+  const ccxt = await import('ccxt');
+  const ExClass = (ccxt as any)[id] ?? (ccxt as any).default?.[id];
+  if (typeof ExClass === 'function') {
+    // Проверяем наличие watchTicker (есть только в pro)
+    const inst = new ExClass();
+    if (typeof inst.watchTicker !== 'function') {
+      throw new Error(`ccxt.${id} does not support WebSocket streams — install ccxt@4.4+ with pro`);
+    }
+    return ExClass;
+  }
+
+  throw new Error(`Cannot load ccxt pro class for exchange: ${id}`);
+}
+
 export class ExchangeConnector {
   private ex!: any;
   private cb: CircuitBreaker;
   private rm: ReconnectManager;
   private rl: RateLimiter;
   private activeStreams = new Set<string>();
-  public latencyMs    = 0;
+  public latencyMs     = 0;
   public lastMessageAt = 0;
-  public restarts     = 0;
+  public restarts      = 0;
 
   constructor(
     public readonly id: ExchangeId,
@@ -41,16 +68,8 @@ export class ExchangeConnector {
       try { await this.ex.close(); } catch {}
       this.ex = null;
     }
-
-    // ccxt/pro экспортирует классы бирж напрямую: ccxtpro.binance, ccxtpro.bybit и т.д.
-    const ExClass = (ccxtpro as Record<string, new (o?: object) => any>)[this.id as string];
-    if (!ExClass) throw new Error(`Unknown exchange or ccxt/pro not available: ${this.id}`);
-
-    this.ex = new ExClass({
-      enableRateLimit: true,
-      timeout:         30_000,
-      newUpdates:      true,
-    });
+    const ExClass = await loadProExchange(this.id as string);
+    this.ex = new ExClass({ enableRateLimit: true, timeout: 30_000, newUpdates: true });
     this.logger.info({ id: this.id }, 'connected');
   }
 
@@ -80,9 +99,7 @@ export class ExchangeConnector {
     this.activeStreams.add(key);
     while (this.activeStreams.has(key)) {
       try {
-        const ticker = await this.cb.execute(
-          () => this.ex.watchTicker(symbol)
-        );
+        const ticker = await this.cb.execute(() => this.ex.watchTicker(symbol));
         this.lastMessageAt = Date.now();
         this.onTicker(ticker, this.id);
       } catch (e) {
