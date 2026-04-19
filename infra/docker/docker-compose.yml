@@ -1,0 +1,94 @@
+# infra/docker/docker-compose.yml
+services:
+  valkey:
+    image: valkey/valkey:8.1-alpine
+    ports: ["6379:6379"]
+    command: valkey-server --save "" --appendonly no --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - valkey_data:/data
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.4-alpine
+    ports: ["8123:8123", "9000:9000"]
+    environment:
+      CLICKHOUSE_DB: crypto
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      # ВАЖНО: 127.0.0.1 вместо localhost, чтобы не идти на ::1 (IPv6)
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: crypto
+      POSTGRES_USER: crypto
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crypto -d crypto"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.3.0
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      # Стандартный health endpoint Prometheus
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.6.1
+    # Внутри контейнера Grafana слушает 3000, наружу отдаём 3100
+    ports: ["3100:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_HTTP_PORT: "3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+    volumes:
+      - grafana_data:/var/lib/grafana
+    healthcheck:
+      # Официальный API /api/health
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  valkey_data:
+  clickhouse_data:
+  pg_data:
+  grafana_data:

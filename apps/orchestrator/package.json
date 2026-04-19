@@ -1,0 +1,27 @@
+{
+  "name": "@crypto-platform/orchestrator",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@crypto-platform/types": "workspace:*",
+    "@crypto-platform/utils": "workspace:*",
+    "@crypto-platform/logger": "workspace:*",
+    "@crypto-platform/config": "workspace:*",
+    "@crypto-platform/metrics": "workspace:*",
+    "iovalkey": "^0.3.3",
+    "fastify": "^5.4.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "tsx": "^4.21.0",
+    "@types/node": "^22.15.21"
+  }
+}
