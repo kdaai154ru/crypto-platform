@@ -1,5 +1,4 @@
 // cores/exchange-core/src/connector.ts
-// Статический top-level import — ccxt загружается один раз при старте процесса
 import ccxt from 'ccxt';
 import type { ExchangeId } from '@crypto-platform/types';
 import type { Logger } from '@crypto-platform/logger';
@@ -64,7 +63,10 @@ export class ExchangeConnector {
         )) as any[];
         this.lastMessageAt = Date.now();
         for (const t of trades) this.onTrade(t, this.id);
-        if (this.ex.trades?.[symbol]) this.ex.trades[symbol].clear?.();
+        // Полная очистка буфера ccxt после обработки — предотвращает утечку памяти
+        if (this.ex.trades?.[symbol]) {
+          this.ex.trades[symbol].clear?.();
+        }
       } catch (e) {
         this.logger.error({ symbol, err: e }, 'watchTrades error');
         this.restarts++;
@@ -82,6 +84,10 @@ export class ExchangeConnector {
         const ticker = await this.cb.execute(() => this.ex.watchTicker(symbol));
         this.lastMessageAt = Date.now();
         this.onTicker(ticker, this.id);
+        // Удаляем кэшированный ticker из памяти ccxt после обработки
+        if (this.ex.tickers?.[symbol]) {
+          delete this.ex.tickers[symbol];
+        }
       } catch (e) {
         this.logger.error({ symbol, err: e }, 'watchTicker error');
         await this.rm.schedule(() => this.connect());
@@ -100,9 +106,9 @@ export class ExchangeConnector {
         )) as any[];
         this.lastMessageAt = Date.now();
         for (const c of candles) this.onCandle(c, symbol, tf, this.id);
+        // Полная очистка буфера ohlcv — предотвращает утечку памяти
         if (this.ex.ohlcvs?.[symbol]?.[tf]) {
-          const buf = this.ex.ohlcvs[symbol][tf];
-          if (buf.length > CANDLES_LIMIT) buf.splice(0, buf.length - CANDLES_LIMIT);
+          this.ex.ohlcvs[symbol][tf].length = 0;
         }
       } catch (e) {
         this.logger.error({ symbol, tf, err: e }, 'watchOHLCV error');

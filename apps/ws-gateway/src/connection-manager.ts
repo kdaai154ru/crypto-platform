@@ -7,7 +7,8 @@ import type { WebSocket } from 'uWebSockets.js'
  *   1 = SUCCESS
  *   2 = DROPPED   (соединение закрыто)
  */
-export const UWS_SEND_DROPPED = 2
+export const UWS_SEND_BACKPRESSURE = 0
+export const UWS_SEND_DROPPED      = 2
 
 export interface WsClient {
   id: string

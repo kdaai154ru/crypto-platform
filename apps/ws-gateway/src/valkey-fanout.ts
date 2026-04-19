@@ -1,7 +1,7 @@
 // apps/ws-gateway/src/valkey-fanout.ts
 import Valkey from 'iovalkey'
 import type { ConnectionManager } from './connection-manager.js'
-import { UWS_SEND_DROPPED } from './connection-manager.js'
+import { UWS_SEND_DROPPED, UWS_SEND_BACKPRESSURE } from './connection-manager.js'
 import type { Logger } from '@crypto-platform/logger'
 
 /**
@@ -24,6 +24,15 @@ const CHANNEL_MAP: Record<string, (data: Record<string, unknown>) => string> = {
   'system:status':   _ => 'system:status',
 }
 
+// Счётчик пропущенных сообщений из-за backpressure — логируем раз в минуту
+let backpressureDrops = 0;
+setInterval(() => {
+  if (backpressureDrops > 0) {
+    // Логирование будет доступно через замыкание после инициализации класса
+    backpressureDrops = 0;
+  }
+}, 60_000);
+
 export class ValkeyFanout {
   private sub: Valkey
 
@@ -40,6 +49,14 @@ export class ValkeyFanout {
     this.sub.on('error', (e: Error) => this.log.warn({ err: e.message }, 'fanout sub error'))
     this.sub.subscribe(...Object.keys(CHANNEL_MAP), (err: unknown) => { if (err) this.log.error(err) })
     this.sub.on('message', this.onMessage.bind(this))
+
+    // Логируем backpressure drops раз в минуту
+    setInterval(() => {
+      if (backpressureDrops > 0) {
+        this.log.warn({ drops: backpressureDrops }, 'backpressure: slow clients dropped messages');
+        backpressureDrops = 0;
+      }
+    }, 60_000);
   }
 
   private onMessage(channel: string, msg: string): void {
@@ -53,12 +70,18 @@ export class ValkeyFanout {
       const out = JSON.stringify({ channel: wsChannel, data })
 
       // uWS.send() возвращает number:
-      //   0 = BACKPRESSURE, 1 = SUCCESS, 2 = DROPPED (соединение закрыто)
-      // Исключения не бросает — try/catch был бесполезен.
+      //   0 = BACKPRESSURE (буфер переполнен — клиент медленный, сообщение потеряно)
+      //   1 = SUCCESS
+      //   2 = DROPPED     (соединение закрыто — удаляем клиента)
       const dead: string[] = []
       for (const c of clients) {
         const result = c.ws.send(out)
-        if (result === UWS_SEND_DROPPED) dead.push(c.id)
+        if (result === UWS_SEND_DROPPED) {
+          dead.push(c.id)
+        } else if (result === UWS_SEND_BACKPRESSURE) {
+          // Клиент жив но медленный — считаем дропы, не удаляем
+          backpressureDrops++;
+        }
       }
       for (const id of dead) {
         this.log.debug({ id }, 'removing dead client')
