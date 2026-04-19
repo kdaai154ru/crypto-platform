@@ -2,7 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "@clickhouse/client": ["./node_modules/@clickhouse/client/dist/index.d.ts"]
+    }
   },
   "include": [
     "src/**/*.ts"
