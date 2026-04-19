@@ -13,7 +13,7 @@
     "@crypto-platform/config": "workspace:*",
     "@crypto-platform/logger": "workspace:*",
     "@crypto-platform/types": "workspace:*",
-    "iovalkey": "^0.3.3",
+    "ioredis": "^5.6.1",
     "nanoid": "^5.1.9",
     "uWebSockets.js": "uNetworking/uWebSockets.js#v20.52.0",
     "zod": "^3.25.76"
