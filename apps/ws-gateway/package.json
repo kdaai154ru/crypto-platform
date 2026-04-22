@@ -13,14 +13,14 @@
     "@crypto-platform/config": "workspace:*",
     "@crypto-platform/logger": "workspace:*",
     "@crypto-platform/types": "workspace:*",
-    "ioredis": "^5.6.1",
+    "iovalkey": "^0.3.3",
     "nanoid": "^5.1.9",
     "uWebSockets.js": "uNetworking/uWebSockets.js#v20.52.0",
-    "zod": "^3.25.76"
+    "zod": "^3.24.4"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.7.3"
   }
 }

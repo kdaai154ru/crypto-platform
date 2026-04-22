@@ -23,12 +23,12 @@
     "@crypto-platform/logger": "workspace:*",
     "@crypto-platform/config": "workspace:*",
     "iovalkey": "^0.3.3",
-    "zod": "^3.25.76"
+    "zod": "^3.24.4"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
+    "typescript": "^5.7.3",
     "tsx": "^4.21.0",
-    "vitest": "^2.1.9",
+    "vitest": "^3.1.3",
     "@types/node": "^22.15.21"
   }
 }
