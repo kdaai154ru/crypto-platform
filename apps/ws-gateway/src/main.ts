@@ -203,7 +203,7 @@ const pingTimer = setInterval(() => {
   }
   for (const client of cm.all()) {
     try {
-      client.ws.send('ping');
+      client.ws.ping();
     } catch {}
   }
 }, 30_000);

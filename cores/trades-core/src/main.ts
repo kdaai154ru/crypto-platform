@@ -88,8 +88,13 @@ async function start() {
     }
   });
 
-  setInterval(() => hb.set('heartbeat:trades-core', Date.now().toString(), 'EX', 30), 5_000);
-
+    setInterval(async () => {
+      try {
+        await hb.set('heartbeat:trades-core', Date.now().toString(), 'EX', 30);
+      } catch (err) {
+        log.warn({ err }, 'heartbeat failed');
+      }
+    }, 5_000);
   const shutdown = async () => {
     log.info('Shutting down trades-core...');
     processor.destroy();
