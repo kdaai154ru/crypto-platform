@@ -45,6 +45,7 @@ yarn-error.log*
 public/dist/
 *.min.js
 *.min.css
+package-lock.json
 
 # Logs
 *.log

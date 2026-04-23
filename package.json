@@ -1,25 +1,26 @@
 {
   "name": "crypto-platform",
+  "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "build": "turbo run build --filter=!@crypto-platform/frontend",
-    "dev": "turbo run dev --concurrency=25 --filter=!@crypto-platform/frontend",
-    "test": "turbo run test",
-    "typecheck": "turbo run typecheck --filter=!@crypto-platform/frontend"
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "start": "turbo run start",
+    "clean": "turbo run clean",
+    "lint": "turbo run lint",
+    "test": "turbo run test"
   },
   "devDependencies": {
-    "turbo": "^2.9.6",
-    "typescript": "^5.7.3",
-    "tsx": "^4.21.0",
-    "vitest": "^3.1.3",
-    "@types/node": "^22.15.21"
+    "turbo": "2.5.4",
+    "typescript": "5.8.3",
+    "tsx": "4.19.3",
+    "vitest": "3.1.1",
+    "@types/node": "22.15.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild",
-      "@parcel/watcher",
-      "ccxt"
+      "uWebSockets.js"
     ]
   }
 }
