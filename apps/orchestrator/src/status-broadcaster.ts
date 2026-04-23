@@ -1,12 +1,7 @@
 // apps/orchestrator/src/status-broadcaster.ts
 import type Valkey from 'iovalkey'
-import type { ModuleState, ExchangeState, SystemStatusPayload } from '@crypto-platform/types'
+import type { ModuleState, ExchangeState, SystemStatusPayload, PublicModuleState } from '@crypto-platform/types'
 import type { Logger } from '@crypto-platform/logger'
-
-interface PublicModuleState {
-  id: string
-  status: string
-}
 
 export class StatusBroadcaster {
   constructor(
@@ -28,7 +23,7 @@ export class StatusBroadcaster {
 
     const payload: SystemStatusPayload = {
       ts: Date.now(),
-      modules: publicModules as ModuleState[], // совместимо по типам
+      modules: publicModules,
       exchanges,
       activePairs,
       activeClients

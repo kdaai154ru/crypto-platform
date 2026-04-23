@@ -151,6 +151,7 @@ export class ExchangeConnector {
       } catch (e) {
         this.logger.error({ symbol, err: e }, 'watchTicker error')
         this.handleStreamError(key, e)
+        this.restarts++
         await this.rm.schedule(() => this.connect())
       }
     }
@@ -183,6 +184,7 @@ export class ExchangeConnector {
       } catch (e) {
         this.logger.error({ symbol, tf, err: e }, 'watchOHLCV error')
         this.handleStreamError(key, e)
+        this.restarts++
         await this.rm.schedule(() => this.connect())
       }
     }

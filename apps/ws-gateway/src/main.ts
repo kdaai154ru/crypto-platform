@@ -24,6 +24,16 @@ const connectionCounts = new Map<string, { count: number; resetAt: number }>()
 const RATE_LIMIT = 5
 const RATE_WINDOW = 1000
 
+// Очистка устаревших записей rate limiting каждые 60 секунд
+const cleanupInterval = setInterval(() => {
+  const now = Date.now()
+  for (const [ip, entry] of connectionCounts) {
+    if (entry.resetAt < now) {
+      connectionCounts.delete(ip)
+    }
+  }
+}, 60_000)
+
 const app = uWS.App().ws('/*', {
   idleTimeout: 120,
   open(ws) {
@@ -34,7 +44,7 @@ const app = uWS.App().ws('/*', {
       if (now < entry.resetAt) {
         if (entry.count >= RATE_LIMIT) {
           log.warn({ ip }, 'Rate limit exceeded, closing connection')
-          ws.close(1008, 'Rate limit exceeded')
+          ws.end(1008, 'Rate limit exceeded')
           return
         }
         entry.count++
@@ -118,6 +128,7 @@ function shutdown() {
   log.info('Shutting down ws-gateway...')
   clearInterval(heartbeatTimer)
   clearInterval(pingTimer)
+  clearInterval(cleanupInterval)
   fanout.close()
   valkeyPub.quit()
   hb.quit()
