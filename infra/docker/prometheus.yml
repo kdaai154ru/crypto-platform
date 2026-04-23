@@ -2,17 +2,23 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  scrape_timeout: 10s
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
 
 scrape_configs:
   - job_name: orchestrator
     static_configs:
       - targets: ["host.docker.internal:3001"]
-        labels: { service: orchestrator }
+        labels:
+          service: orchestrator
 
   - job_name: ws-gateway
     static_configs:
       - targets: ["host.docker.internal:4001"]
-        labels: { service: ws-gateway }
+        labels:
+          service: ws-gateway
 
   - job_name: cores
     static_configs:
@@ -30,4 +36,57 @@ scrape_configs:
           - "host.docker.internal:4012"
           - "host.docker.internal:4013"
           - "host.docker.internal:4014"
-        labels: { service: core }
+        labels:
+          job: cores
+      - targets: ["host.docker.internal:4002"]
+        labels:
+          service: exchange-core
+          job: cores
+      - targets: ["host.docker.internal:4003"]
+        labels:
+          service: normalizer-core
+          job: cores
+      - targets: ["host.docker.internal:4004"]
+        labels:
+          service: aggregator-core
+          job: cores
+      - targets: ["host.docker.internal:4005"]
+        labels:
+          service: trades-core
+          job: cores
+      - targets: ["host.docker.internal:4006"]
+        labels:
+          service: indicator-core
+          job: cores
+      - targets: ["host.docker.internal:4007"]
+        labels:
+          service: screener-core
+          job: cores
+      - targets: ["host.docker.internal:4008"]
+        labels:
+          service: alert-core
+          job: cores
+      - targets: ["host.docker.internal:4009"]
+        labels:
+          service: derivatives-core
+          job: cores
+      - targets: ["host.docker.internal:4010"]
+        labels:
+          service: whale-core
+          job: cores
+      - targets: ["host.docker.internal:4011"]
+        labels:
+          service: etf-core
+          job: cores
+      - targets: ["host.docker.internal:4012"]
+        labels:
+          service: options-core
+          job: cores
+      - targets: ["host.docker.internal:4013"]
+        labels:
+          service: storage-core
+          job: cores
+      - targets: ["host.docker.internal:4014"]
+        labels:
+          service: worker-core
+          job: cores

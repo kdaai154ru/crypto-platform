@@ -1,94 +1,137 @@
 // apps/ws-gateway/src/valkey-fanout.ts
-import Valkey from 'iovalkey'
-import type { ConnectionManager } from './connection-manager.js'
-import { UWS_SEND_DROPPED, UWS_SEND_BACKPRESSURE } from './connection-manager.js'
-import type { Logger } from '@crypto-platform/logger'
+import Valkey from 'iovalkey';
+import type { ConnectionManager, WsClient } from './connection-manager.js';
+import { UWS_SEND_BACKPRESSURE, UWS_SEND_DROPPED } from './connection-manager.js';
+import type { Logger } from '@crypto-platform/logger';
+import {
+  wsMessagesSentCounter,
+  wsBackpressureDropsCounter,
+  wsMessageLatencyHistogram,
+} from '@crypto-platform/metrics';
 
 /**
- * Маппинг: Valkey-канал → WS-канал (имя подписки клиента)
- * Функция получает парсенные данные сообщения и возвращает имя WS-канала
+ * Маппинг Valkey Pub/Sub каналов на клиентские WebSocket каналы.
+ * Ключ — канал в Valkey, значение — канал, который отправляется клиенту.
  */
-const CHANNEL_MAP: Record<string, (data: Record<string, unknown>) => string> = {
-  'agg:ticker':      d => `ticker:${d['symbol']}`,
-  'agg:candle':      d => `ohlcv:${d['symbol']}:${d['tf']}`,
-  'trades:stream':   d => `trades:${d['symbol']}`,
-  'trades:large':    _ => 'trades:large',
-  'trades:delta':    d => `trades:delta:${d['symbol']}`,
-  'deriv:oi':        d => `oi:${d['symbol']}`,
-  'deriv:fund':      d => `funding:${d['symbol']}`,
-  'deriv:liq':       _ => 'liquidations',
-  'whale:event':     _ => 'whale:feed',
-  'screener:update': _ => 'screener:update',
-  'options:update':  _ => 'options:update',
-  'etf:latest':      _ => 'etf:latest',
-  'system:status':   _ => 'system:status',
-}
+const CHANNEL_MAP: Record<string, string> = {
+  'agg:ticker': 'ticker',
+  'agg:candle': 'candle',
+  'trades:stream': 'trades',
+  'trades:large': 'trades_large',
+  'trades:delta': 'trades_delta',
+  'deriv:oi': 'deriv_oi',
+  'deriv:fund': 'deriv_fund',
+  'deriv:liq': 'deriv_liq',
+  'whale:event': 'whale_event',
+  'screener:update': 'screener_update',
+  'options:update': 'options_update',
+  'etf:latest': 'etf_latest',
+  'system:status': 'system_status',
+};
 
-// Счётчик пропущенных сообщений из-за backpressure — логируем раз в минуту
-let backpressureDrops = 0;
-setInterval(() => {
-  if (backpressureDrops > 0) {
-    // Логирование будет доступно через замыкание после инициализации класса
-    backpressureDrops = 0;
-  }
-}, 60_000);
+/**
+ * Список всех каналов, на которые подписывается ValkeyFanout.
+ */
+const SUBSCRIBE_CHANNELS = Object.keys(CHANNEL_MAP);
 
 export class ValkeyFanout {
-  private sub: Valkey
+  private subscriber: Valkey;
+  private isRunning = true;
+  private logger: Logger;
 
   constructor(
     valkeyOpts: { host: string; port: number },
-    private readonly cm: ConnectionManager,
-    private readonly log: Logger
+    private readonly connectionManager: ConnectionManager,
+    logger: Logger
   ) {
-    this.sub = new Valkey({
-      ...valkeyOpts,
-      retryStrategy: (times: number) => Math.min(times * 100, 3000),
-      enableOfflineQueue: true,
-    })
-    this.sub.on('error', (e: Error) => this.log.warn({ err: e.message }, 'fanout sub error'))
-    this.sub.subscribe(...Object.keys(CHANNEL_MAP), (err: unknown) => { if (err) this.log.error(err) })
-    this.sub.on('message', this.onMessage.bind(this))
+    this.logger = logger.child({ component: 'ValkeyFanout' });
+    this.subscriber = new Valkey(valkeyOpts);
 
-    // Логируем backpressure drops раз в минуту
-    setInterval(() => {
-      if (backpressureDrops > 0) {
-        this.log.warn({ drops: backpressureDrops }, 'backpressure: slow clients dropped messages');
-        backpressureDrops = 0;
-      }
-    }, 60_000);
+    this.subscriber.on('error', (err: Error) => {
+      this.logger.error({ err }, 'Valkey subscriber error');
+    });
+
+    this.subscriber.on('ready', () => {
+      this.logger.info('Valkey subscriber ready, subscribing to channels');
+      this.subscriber.subscribe(...SUBSCRIBE_CHANNELS);
+    });
+
+    this.subscriber.on('message', (channel: string, message: string) => {
+      if (!this.isRunning) return;
+      this.handleMessage(channel, message).catch((err) => {
+        this.logger.error({ err, channel }, 'Error handling Valkey message');
+      });
+    });
   }
 
-  private onMessage(channel: string, msg: string): void {
-    try {
-      const data = JSON.parse(msg) as Record<string, unknown>
-      const getChannel = CHANNEL_MAP[channel]
-      if (!getChannel) return
-      const wsChannel = getChannel(data)
-      const clients = this.cm.getByChannel(wsChannel)
-      if (!clients.length) return
-      const out = JSON.stringify({ channel: wsChannel, data })
+  private async handleMessage(channel: string, message: string): Promise<void> {
+    const wsChannel = CHANNEL_MAP[channel];
+    if (!wsChannel) {
+      this.logger.warn({ channel }, 'Unknown Valkey channel');
+      return;
+    }
 
-      // uWS.send() возвращает number:
-      //   0 = BACKPRESSURE (буфер переполнен — клиент медленный, сообщение потеряно)
-      //   1 = SUCCESS
-      //   2 = DROPPED     (соединение закрыто — удаляем клиента)
-      const dead: string[] = []
-      for (const c of clients) {
-        const result = c.ws.send(out)
-        if (result === UWS_SEND_DROPPED) {
-          dead.push(c.id)
-        } else if (result === UWS_SEND_BACKPRESSURE) {
-          // Клиент жив но медленный — считаем дропы, не удаляем
-          backpressureDrops++;
+    let data: any;
+    try {
+      data = JSON.parse(message);
+    } catch {
+      this.logger.warn({ channel }, 'Failed to parse message as JSON');
+      return;
+    }
+
+    const clients = this.connectionManager.getByChannel(wsChannel);
+    if (clients.length === 0) return;
+
+    const payload = JSON.stringify({
+      type: wsChannel,
+      data,
+    });
+
+    const now = Date.now();
+    const messageTs = data?.ts ? new Date(data.ts).getTime() : undefined;
+
+    for (const client of clients) {
+      // Пропускаем клиента, если ws уже не активен
+      if (!client.ws) continue;
+
+      const sendResult = client.ws.send(payload);
+
+      if (sendResult === UWS_SEND_BACKPRESSURE || sendResult === UWS_SEND_DROPPED) {
+        // Инкремент метрики backpressure drops
+        wsBackpressureDropsCounter.inc({ channel: wsChannel });
+        this.logger.debug(
+          { clientId: client.id, channel: wsChannel, result: sendResult },
+          'Message dropped due to backpressure'
+        );
+      } else {
+        // Успешная отправка
+        wsMessagesSentCounter.inc({ channel: wsChannel });
+
+        // Измерение задержки доставки, если есть поле ts в данных
+        if (messageTs) {
+          const latencyMs = now - messageTs;
+          if (latencyMs >= 0) {
+            wsMessageLatencyHistogram.observe({ channel: wsChannel }, latencyMs);
+          }
         }
       }
-      for (const id of dead) {
-        this.log.debug({ id }, 'removing dead client')
-        this.cm.remove(id)
-      }
-    } catch (e) { this.log.error(e, 'fanout onMessage error') }
+
+      // Обновляем время последней активности клиента
+      this.connectionManager.updatePing(client.id);
+    }
   }
 
-  close(): void { this.sub.quit() }
+  /**
+   * Закрывает подписки и соединение с Valkey.
+   */
+  close(): void {
+    this.isRunning = false;
+    try {
+      this.subscriber.unsubscribe(...SUBSCRIBE_CHANNELS);
+      this.subscriber.quit();
+      this.logger.info('Valkey subscriber closed');
+    } catch (err) {
+      this.logger.error({ err }, 'Error closing Valkey subscriber');
+    }
+  }
 }

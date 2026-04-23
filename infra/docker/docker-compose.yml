@@ -1,94 +1,107 @@
 # infra/docker/docker-compose.yml
+version: '3.9'
+
 services:
   valkey:
-    image: valkey/valkey:8.1-alpine
-    ports: ["6379:6379"]
-    command: valkey-server --save "" --appendonly no --maxmemory 512mb --maxmemory-policy allkeys-lru
-    healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+    image: valkey/valkey:8.1
+    container_name: crypto-valkey
+    ports:
+      - "6379:6379"
+    command: valkey-server --appendonly yes
     volumes:
       - valkey_data:/data
-    restart: unless-stopped
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:25.4-alpine
-    ports: ["8123:8123", "9000:9000"]
-    environment:
-      CLICKHOUSE_DB: crypto
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    healthcheck:
-      # ВАЖНО: 127.0.0.1 вместо localhost, чтобы не идти на ::1 (IPv6)
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 40s
+    networks:
+      - crypto-net
     restart: unless-stopped
 
   postgres:
     image: postgres:17-alpine
-    ports: ["5432:5432"]
+    container_name: crypto-postgres
     environment:
-      POSTGRES_DB: crypto
       POSTGRES_USER: crypto
       POSTGRES_PASSWORD: secret
+      POSTGRES_DB: crypto
+    ports:
+      - "5432:5432"
     volumes:
-      - pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U crypto -d crypto"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 20s
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - crypto-net
     restart: unless-stopped
-
-  prometheus:
-    image: prom/prometheus:v3.3.0
-    ports: ["9090:9090"]
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     healthcheck:
-      # Стандартный health endpoint Prometheus
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:9090/-/healthy || exit 1"]
+      test: ["CMD-SHELL", "pg_isready -U crypto"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 20s
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3-alpine
+    container_name: crypto-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: crypto
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - crypto-net
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    container_name: crypto-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - crypto-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:11.6.1
-    # Внутри контейнера Grafana слушает 3000, наружу отдаём 3100
-    ports: ["3100:3000"]
+    image: grafana/grafana:11.6.0
+    container_name: crypto-grafana
+    ports:
+      - "3100:3000"
     environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: crypto123
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_SERVER_HTTP_PORT: "3000"
-    depends_on:
-      prometheus:
-        condition: service_started
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/crypto-platform.json
     volumes:
       - grafana_data:/var/lib/grafana
-    healthcheck:
-      # Официальный API /api/health
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    networks:
+      - crypto-net
     restart: unless-stopped
+    depends_on:
+      - prometheus
+
+networks:
+  crypto-net:
+    driver: bridge
 
 volumes:
   valkey_data:
+  postgres_data:
   clickhouse_data:
-  pg_data:
+  prometheus_data:
   grafana_data:

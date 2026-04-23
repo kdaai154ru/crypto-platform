@@ -1,0 +1,70 @@
+# infra/docker/alert_rules.yml
+groups:
+  - name: crypto_platform_alerts
+    interval: 30s
+    rules:
+      # Модуль офлайн более 2 минут
+      - alert: ModuleOffline
+        expr: crypto_module_status == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: module
+        annotations:
+          summary: "Module {{ $labels.module }} is offline"
+          description: "Module {{ $labels.module }} has been offline for more than 2 minutes."
+
+      # Модуль деградирован более 5 минут
+      - alert: ModuleDegraded
+        expr: crypto_module_status > 0 and crypto_module_status < 1
+        for: 5m
+        labels:
+          severity: warning
+          component: module
+        annotations:
+          summary: "Module {{ $labels.module }} is degraded"
+          description: "Module {{ $labels.module }} has been in degraded state for more than 5 minutes."
+
+      # Высокая задержка WebSocket сообщений
+      - alert: HighWSLatency
+        expr: histogram_quantile(0.95, sum(rate(crypto_ws_message_latency_ms_bucket[1m])) by (le, channel)) > 500
+        for: 3m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "High WebSocket message latency on {{ $labels.channel }}"
+          description: "95th percentile latency for channel {{ $labels.channel }} is {{ $value }}ms (>500ms) for more than 3 minutes."
+
+      # Circuit breaker открыт более 1 минуты
+      - alert: ExchangeCircuitOpen
+        expr: crypto_circuit_breaker_state == 1
+        for: 1m
+        labels:
+          severity: critical
+          component: exchange
+        annotations:
+          summary: "Circuit breaker open for exchange {{ $labels.exchange }}"
+          description: "Circuit breaker for exchange {{ $labels.exchange }} has been open for more than 1 minute."
+
+      # Высокое отставание пайплайна
+      - alert: HighPipelineLag
+        expr: crypto_pipeline_lag_ms > 5000
+        for: 2m
+        labels:
+          severity: warning
+          component: pipeline
+        annotations:
+          summary: "High pipeline lag in {{ $labels.core }}"
+          description: "Pipeline lag for core {{ $labels.core }} is {{ $value }}ms (>5000ms) for more than 2 minutes."
+
+      # Большое количество дропов из-за backpressure
+      - alert: HighBackpressureDrops
+        expr: rate(crypto_ws_backpressure_drops[5m]) * 60 > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "High WebSocket backpressure drops"
+          description: "WebSocket backpressure drops rate is {{ $value }} per minute (>100) for more than 5 minutes."
