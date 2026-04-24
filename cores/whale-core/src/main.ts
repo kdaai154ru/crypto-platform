@@ -31,11 +31,30 @@ sub.on('message', (_: string, msg: string) => {
   try {
     const trade = JSON.parse(msg) as NormalizedTrade;
     const ev = monitor.process(trade);
-    if (ev) pub.publish('whale:event', JSON.stringify(ev));
+    // FIX: .catch() prevents silent unhandled rejection when Valkey is unavailable
+    if (ev) {
+      pub.publish('whale:event', JSON.stringify(ev))
+        .catch((e: Error) => log.error({ err: e.message }, 'publish whale:event failed'));
+    }
   } catch (e) { log.error(e); }
 });
 
-setInterval(() => hb.set('heartbeat:whale-core', Date.now().toString(), 'EX', 30), 5_000);
+// FIX: save ref so clearInterval runs in shutdown
+const hbTimer = setInterval(
+  () => hb.set('heartbeat:whale-core', Date.now().toString(), 'EX', 30),
+  5_000,
+);
 
-process.on('SIGTERM', () => { sub.quit(); pub.quit(); hb.quit(); process.exit(0); });
+// FIX: unified shutdown handler for both SIGTERM and SIGINT
+const shutdown = () => {
+  clearInterval(hbTimer);
+  sub.quit();
+  pub.quit();
+  hb.quit();
+  process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT',  shutdown);
+
 log.info('whale-core started');
