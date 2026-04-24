@@ -7,12 +7,17 @@ services:
     container_name: crypto-valkey
     ports:
       - "6379:6379"
-    command: valkey-server --appendonly yes
+    command: valkey-server --appendonly yes --requirepass ${VALKEY_PASSWORD}
     volumes:
       - valkey_data:/data
     networks:
       - crypto-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   postgres:
     image: postgres:17-alpine
@@ -49,6 +54,11 @@ services:
     networks:
       - crypto-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     ulimits:
       nofile:
         soft: 262144
