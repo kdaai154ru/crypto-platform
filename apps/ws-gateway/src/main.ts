@@ -6,7 +6,7 @@ import Valkey from 'iovalkey';
 import uWS from 'uWebSockets.js';
 import { ConnectionManager } from './connection-manager.js';
 import { SubscriptionHandler } from './subscription-handler.js';
-import { ValkeyFanout } from './valkey-fanout.js';
+import { ValkeyStreams } from './valkey-streams.js';
 import {
   createMetricsServer,
   wsConnectionsTotal,
@@ -31,7 +31,7 @@ const valkeyOpts = { host: env.VALKEY_HOST, port: env.VALKEY_PORT };
 const valkeyPub = new Valkey(valkeyOpts);
 const cm = new ConnectionManager();
 const subHdlr = new SubscriptionHandler(cm, valkeyPub, log);
-const fanout = new ValkeyFanout(valkeyOpts, cm, log);
+const fanout = new ValkeyStreams(valkeyOpts, cm, log);
 
 valkeyPub.on('error', (e: Error) => log.warn({ err: e.message }, 'valkeyPub error'));
 
@@ -58,6 +58,15 @@ function verifyJwt(token: string, secret: string): { sub: string } | null {
   if (parts.length !== 3) return null;
   
   const [headerB64, payloadB64, signatureB64] = parts;
+
+  // Проверяем алгоритм в header
+  try {
+    const headerJson = Buffer.from(headerB64, 'base64url').toString('utf-8');
+    const header = JSON.parse(headerJson);
+    if (header.alg !== 'HS256') return null;
+  } catch {
+    return null;
+  }
   
   // Проверяем подпись
   const unsigned = `${headerB64}.${payloadB64}`;
