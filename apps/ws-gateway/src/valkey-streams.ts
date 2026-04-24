@@ -9,10 +9,6 @@ import {
   wsMessageLatencyHistogram,
 } from '@crypto-platform/metrics';
 
-/**
- * Маппинг Valkey Streams на клиентские WebSocket каналы.
- * Ключ – название потока в Valkey, значение – ws-канал для клиентов.
- */
 const CHANNEL_MAP: Record<string, string> = {
   'agg:ticker': 'ticker',
   'agg:candle': 'candle',
@@ -35,13 +31,11 @@ const CONSUMER_NAME = `${os.hostname()}-${process.pid}`;
 const POLL_INTERVAL_MS = 100;
 const BLOCK_MS = 100;
 const COUNT = 100;
-const MAXLEN = 1000; // used by producers
 
 export class ValkeyStreams {
   private subscriber: Valkey;
   private isRunning = true;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private pendingFirstLoopDone = false;
   private logger: Logger;
 
   constructor(
@@ -50,7 +44,7 @@ export class ValkeyStreams {
     logger: Logger
   ) {
     this.logger = logger.child({ component: 'ValkeyStreams' });
-    this.subscriber = new Valkey(valkeyOpts);
+    this.subscriber = new (require('iovalkey').default ?? require('iovalkey'))(valkeyOpts);
 
     this.subscriber.on('error', (err: Error) => {
       this.logger.error({ err }, 'ValkeyStreams subscriber error');
@@ -60,26 +54,25 @@ export class ValkeyStreams {
       this.logger.info('Valkey subscriber ready, setting up consumer groups');
       try {
         await this.initializeConsumerGroups();
-        // Сразу обрабатываем pending сообщения (если есть)
         await this.processPendingMessages();
-        this.startPollingLoop();
+        // FIX: проверка что цикл не запущен — предотвращает двойной поллинг при reconnect
+        if (!this.pollTimer) {
+          this.startPollingLoop();
+        } else {
+          this.logger.warn('Polling loop already running, skipping duplicate start on reconnect');
+        }
       } catch (err) {
         this.logger.error({ err }, 'Failed to initialize streams');
       }
     });
   }
 
-  /**
-   * Создаёт consumer group для каждого стрима.
-   * Использует MKSTREAM, игнорируя ошибку BUSYGROUP.
-   */
   private async initializeConsumerGroups(): Promise<void> {
     for (const stream of STREAM_KEYS) {
       try {
         await this.subscriber.xgroup('CREATE', stream, CONSUMER_GROUP, '$', 'MKSTREAM');
         this.logger.info({ stream }, 'Consumer group created');
       } catch (err: any) {
-        // BUSYGROUP означает, что группа уже существует – это нормально
         if (err.message && !err.message.includes('BUSYGROUP')) {
           this.logger.error({ stream, err }, 'Failed to create consumer group');
         }
@@ -87,21 +80,13 @@ export class ValkeyStreams {
     }
   }
 
-  /**
-   * Однократно читает все pending-сообщения (недоставленные) для данного consumer.
-   * Используем XREADGROUP с id '0' вместо '>'.
-   */
   private async processPendingMessages(): Promise<void> {
     try {
       const streams = STREAM_KEYS.map((s) => ({ key: s, id: '0' }));
       const results = await this.subscriber.xreadgroup(
-        'GROUP',
-        CONSUMER_GROUP,
-        CONSUMER_NAME,
-        'COUNT',
-        COUNT,
-        'BLOCK',
-        BLOCK_MS,
+        'GROUP', CONSUMER_GROUP, CONSUMER_NAME,
+        'COUNT', COUNT,
+        'BLOCK', BLOCK_MS,
         'STREAMS',
         ...streams.map((s) => s.key),
         ...streams.map((s) => s.id)
@@ -114,22 +99,15 @@ export class ValkeyStreams {
     }
   }
 
-  /**
-   * Запускает основной цикл опроса стримов.
-   */
   private startPollingLoop(): void {
     this.pollTimer = setInterval(async () => {
       if (!this.isRunning) return;
       try {
         const streams = STREAM_KEYS.map((s) => ({ key: s, id: '>' }));
         const results = await this.subscriber.xreadgroup(
-          'GROUP',
-          CONSUMER_GROUP,
-          CONSUMER_NAME,
-          'COUNT',
-          COUNT,
-          'BLOCK',
-          BLOCK_MS,
+          'GROUP', CONSUMER_GROUP, CONSUMER_NAME,
+          'COUNT', COUNT,
+          'BLOCK', BLOCK_MS,
           'STREAMS',
           ...streams.map((s) => s.key),
           ...streams.map((s) => s.id)
@@ -147,10 +125,6 @@ export class ValkeyStreams {
     }, POLL_INTERVAL_MS);
   }
 
-  /**
-   * Обрабатывает результаты XREADGROUP (массив с элементами [stream, [id, fields...]]).
-   * Доставляет сообщения клиентам и подтверждает (XACK).
-   */
   private async handleStreamResults(results: any): Promise<void> {
     if (!Array.isArray(results)) return;
 
@@ -164,11 +138,13 @@ export class ValkeyStreams {
       if (!messages || messages.length === 0) continue;
 
       const clients = this.connectionManager.getByChannel(wsChannel);
+      // FIX: батчевый XACK для всех сообщений потока вместо последовательных roundtrip
+      const msgIds: string[] = [];
+
       if (clients.length === 0) {
-        // Если нет подписчиков, всё равно подтверждаем, чтобы не блокировать стрим
-        for (const msg of messages) {
-          const msgId = msg[0];
-          await this.subscriber.xack(streamKey, CONSUMER_GROUP, msgId);
+        for (const msg of messages) msgIds.push(msg[0]);
+        if (msgIds.length > 0) {
+          await this.subscriber.xack(streamKey, CONSUMER_GROUP, ...msgIds);
         }
         continue;
       }
@@ -177,16 +153,14 @@ export class ValkeyStreams {
 
       for (const msg of messages) {
         const msgId = msg[0];
-        const fields = msg[1]; // массив [key, value, ...]
+        const fields = msg[1];
         let data: any = null;
 
         try {
-          // Парсим поле data, если оно было закодировано через JSON
           const dataIndex = fields.indexOf('data');
           if (dataIndex >= 0 && dataIndex + 1 < fields.length) {
             data = JSON.parse(fields[dataIndex + 1]);
           } else {
-            // Если поле data отсутствует, используем весь объект как есть (на будущее)
             data = {};
             for (let i = 0; i < fields.length; i += 2) {
               data[fields[i]] = fields[i + 1];
@@ -194,16 +168,11 @@ export class ValkeyStreams {
           }
         } catch (parseError) {
           this.logger.warn({ streamKey, msgId }, 'Failed to parse message data, XACKing anyway');
-          await this.subscriber.xack(streamKey, CONSUMER_GROUP, msgId);
+          msgIds.push(msgId);
           continue;
         }
 
-        // Доставляем клиентам
-        const payload = JSON.stringify({
-          type: wsChannel,
-          data,
-        });
-
+        const payload = JSON.stringify({ type: wsChannel, data });
         const messageTs = data?.ts ? new Date(data.ts).getTime() : undefined;
 
         for (const client of clients) {
@@ -212,10 +181,6 @@ export class ValkeyStreams {
 
           if (sendResult === UWS_SEND_BACKPRESSURE || sendResult === UWS_SEND_DROPPED) {
             wsBackpressureDropsCounter.inc({ channel: wsChannel });
-            this.logger.debug(
-              { clientId: client.id, channel: wsChannel, result: sendResult },
-              'Message dropped due to backpressure'
-            );
           } else {
             wsMessagesSentCounter.inc({ channel: wsChannel });
             if (messageTs) {
@@ -228,15 +193,16 @@ export class ValkeyStreams {
           this.connectionManager.updatePing(client.id);
         }
 
-        // Подтверждаем успешную обработку
-        await this.subscriber.xack(streamKey, CONSUMER_GROUP, msgId);
+        msgIds.push(msgId);
+      }
+
+      // FIX: один XACK для всего потока — 100x меньше roundtrip'ов
+      if (msgIds.length > 0) {
+        await this.subscriber.xack(streamKey, CONSUMER_GROUP, ...msgIds);
       }
     }
   }
 
-  /**
-   * Graceful shutdown: прекращает опрос, закрывает соединение.
-   */
   async close(): Promise<void> {
     this.isRunning = false;
     if (this.pollTimer) {
