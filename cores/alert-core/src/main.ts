@@ -28,7 +28,6 @@ pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 db.on('error',  (e: Error) => log.warn({ err: e.message }, 'db connection error'));
 
-// FIX #17: передаём db в evaluator для персистирования prevValues
 const evaluator  = new AlertEvaluator(log, db);
 const dispatcher = new NotificationDispatcher(log);
 
@@ -58,9 +57,9 @@ async function loadRules(): Promise<void> {
   }
 }
 
-sub.subscribe('alert:rules:updated', (e: unknown) => { if (e) log.error(e); });
-sub.psubscribe('indicator:*', (e: unknown) => { if (e) log.error(e); });
-
+// FIX A-04: обработчики событий регистрируем здесь, но subscribe/psubscribe
+// вызываются ТОЛЬКО внутри start() ПОСЛЕ await loadRules() —
+// так исключается race condition когда первые pmessage приходят раньше rules.
 sub.on('message', (ch: string, _msg: string) => {
   if (ch === 'alert:rules:updated') {
     loadRules().catch((e: unknown) => log.error(e));
@@ -72,7 +71,7 @@ sub.on('pmessage', (_pat: string, ch: string, msg: string) => {
     const parts = ch.split(':'); // indicator:{symbol}:{tf}:{name}
     if (parts.length < 4) return;
     const [, symbol, , name] = parts;
-    const { value } = JSON.parse(msg);
+    const { value } = JSON.parse(msg) as { value: number };
     const events = evaluator.evaluate(rules, String(name), symbol!, value);
     for (const ev of events) {
       const rule = rules.find(r => r.id === ev.ruleId)!;
@@ -87,16 +86,35 @@ sub.on('pmessage', (_pat: string, ch: string, msg: string) => {
   } catch (e) { log.error(e); }
 });
 
-setInterval(() => hb.set('heartbeat:alert-core', Date.now().toString(), 'EX', 30), 5_000);
-setInterval(() => loadRules().catch((e: unknown) => log.error(e)), 60_000);
+let hbTimer: ReturnType<typeof setInterval> | null = null;
+let reloadTimer: ReturnType<typeof setInterval> | null = null;
 
-process.on('SIGTERM', () => { sub.quit(); pub.quit(); hb.quit(); db.quit(); process.exit(0); });
-process.on('SIGINT',  () => { sub.quit(); pub.quit(); hb.quit(); db.quit(); process.exit(0); });
+const shutdown = () => {
+  if (hbTimer)     clearInterval(hbTimer);
+  if (reloadTimer) clearInterval(reloadTimer);
+  sub.quit();
+  pub.quit();
+  hb.quit();
+  db.quit();
+  process.exit(0);
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT',  shutdown);
 
 async function start(): Promise<void> {
+  // FIX A-04: loadRules и loadPrevValues ПЕРЕД subscribe — rules гарантированно
+  // заполнены к моменту когда первое pmessage от indicator:* будет обработано.
   await loadRules();
-  // FIX #17: восстанавливаем prevValues из Redis до начала обработки событий
   await evaluator.loadPrevValues();
+
+  // Теперь безопасно подписываться — rules уже загружены
+  await sub.subscribe('alert:rules:updated');
+  await sub.psubscribe('indicator:*');
+
+  // FIX A-19/A-20: сохраняем refs таймеров для clearInterval при shutdown
+  hbTimer     = setInterval(() => hb.set('heartbeat:alert-core', Date.now().toString(), 'EX', 30), 5_000);
+  reloadTimer = setInterval(() => loadRules().catch((e: unknown) => log.error(e)), 60_000);
+
   log.info('alert-core started');
 }
 
