@@ -18,14 +18,21 @@ const VALKEY_OPTS = {
   enableOfflineQueue: true,
 };
 
+// FIX #2: используем отдельный Stream-клиент
+// ws-gateway читает данные через XREADGROUP из Streams (agg:ticker, agg:candle)
+// pub.publish() пишет в Pub/Sub — ws-gateway его НЕ читает
+// storage-core читает через sub.on('message') из Pub/Sub — для него оставляем publish
 const sub = new Valkey(VALKEY_OPTS);
-const pub = new Valkey(VALKEY_OPTS);
+const pub = new Valkey(VALKEY_OPTS); // Pub/Sub для storage-core
+const str = new Valkey(VALKEY_OPTS); // Streams для ws-gateway
 const hb  = new Valkey(VALKEY_OPTS);
 
 sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error'));
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
+str.on('error', (e: Error) => log.warn({ err: e.message }, 'str connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
+const STREAM_MAXLEN = 1000;
 const agg      = new OHLCVAggregator();
 const snap     = new PairSnapshotStore();
 const throttle = new ThrottleManager();
@@ -40,13 +47,21 @@ sub.on('message', (ch: string, msg: string) => {
     if (ch === 'norm:candle') {
       const c = agg.process(data as NormalizedCandle);
       snap.setCandle(c);
-      // Публикуем каждое обновление для live chart
-      pub.publish('agg:candle', JSON.stringify(c));
+      const json = JSON.stringify(c);
+      // Pub/Sub → storage-core
+      pub.publish('agg:candle', json);
+      // FIX #2: Stream → ws-gateway (XREADGROUP читает только Streams)
+      str.xadd('agg:candle', 'MAXLEN', '~', String(STREAM_MAXLEN), '*', 'data', json)
+        .catch((e: Error) => log.warn({ err: e.message }, 'xadd agg:candle failed'));
     } else if (ch === 'norm:ticker') {
       const t = data as NormalizedTicker;
       snap.setTicker(t);
       if (throttle.shouldSend(`ticker:${t.symbol}`, 400)) {
+        // Pub/Sub → storage-core
         pub.publish('agg:ticker', msg);
+        // FIX #2: Stream → ws-gateway
+        str.xadd('agg:ticker', 'MAXLEN', '~', String(STREAM_MAXLEN), '*', 'data', msg)
+          .catch((e: Error) => log.warn({ err: e.message }, 'xadd agg:ticker failed'));
       }
     }
   } catch (e: unknown) {
@@ -62,6 +77,14 @@ setInterval(
 process.on('SIGTERM', () => {
   sub.quit();
   pub.quit();
+  str.quit();
+  hb.quit();
+  process.exit(0);
+});
+process.on('SIGINT', () => {
+  sub.quit();
+  pub.quit();
+  str.quit();
   hb.quit();
   process.exit(0);
 });

@@ -2,6 +2,19 @@
 import type Valkey from 'iovalkey';
 import type { Job } from './scheduler.js';
 
+// FIX #3: вспомогательная функция SCAN вместо KEYS
+// KEYS блокирует Redis на весь скан — при большом числе ключей это заморозка всего
+async function scanKeys(valkey: Valkey, pattern: string): Promise<string[]> {
+  const result: string[] = [];
+  let cursor = '0';
+  do {
+    const [nextCursor, keys] = await (valkey as any).scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+    cursor = nextCursor;
+    result.push(...keys);
+  } while (cursor !== '0');
+  return result;
+}
+
 export function createJobs(valkey: Valkey): Job[] {
   return [
     {
@@ -29,7 +42,8 @@ export function createJobs(valkey: Valkey): Job[] {
       name: 'stale-key-cleanup',
       intervalMs: 10 * 60 * 1000,
       run: async () => {
-        const keys = await valkey.keys('heartbeat:*');
+        // FIX #3: SCAN вместо KEYS — не блокирует Redis
+        const keys = await scanKeys(valkey, 'heartbeat:*');
         let removed = 0;
         for (const key of keys) {
           const ttl = await valkey.ttl(key);
@@ -54,7 +68,8 @@ export function createJobs(valkey: Valkey): Job[] {
       name: 'system-health-snapshot',
       intervalMs: 15_000,
       run: async () => {
-        const modules = await valkey.keys('heartbeat:*');
+        // FIX #3: SCAN вместо KEYS
+        const modules = await scanKeys(valkey, 'heartbeat:*');
         const snapshot = {
           ts: Date.now(),
           activeModules: modules.length,

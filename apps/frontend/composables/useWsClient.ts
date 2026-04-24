@@ -8,7 +8,9 @@ let   ws: WebSocket | null = null
 let   reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 const handlers   = new Map<string, Set<(data: unknown) => void>>()
-const pendingSubs = new Map<string, { symbol: string }>()   // channel → last symbol
+// FIX #8: Map<channel, Set<symbol>> — поддержка нескольких символов на один канал
+// Было: Map<channel, { symbol }> — перезаписывало предыдущий символ
+const pendingSubs = new Map<string, Set<string>>() // channel → Set of symbols
 
 let initialized = false
 
@@ -21,8 +23,10 @@ function connect() {
   ws.onopen = () => {
     connected.value = true
     // восстановить все подписки после реконнекта
-    for (const [channel, { symbol }] of pendingSubs) {
-      ws!.send(JSON.stringify({ type: 'subscribe', channels: [channel], symbol }))
+    for (const [channel, symbols] of pendingSubs) {
+      for (const symbol of symbols) {
+        ws!.send(JSON.stringify({ type: 'subscribe', channels: [channel], symbol }))
+      }
     }
   }
 
@@ -39,7 +43,10 @@ function connect() {
     try {
       const msg = JSON.parse(e.data)
       if (msg.type === 'welcome') { clientId.value = msg.clientId; return }
-      const cbs = handlers.get(msg.channel)
+      // FIX #1: msg.channel → msg.type
+      // ws-gateway шлёт { type: 'ticker', data: {...} }, поля channel нет
+      // Было: handlers.get(msg.channel) — всегда undefined, данные не доходили до UI
+      const cbs = handlers.get(msg.type)
       if (cbs) for (const cb of cbs) cb(msg.data)
     } catch { /* ignore */ }
   }
@@ -55,7 +62,10 @@ export function useWsClient() {
   function subscribe(channel: string, symbol: string, cb: (d: unknown) => void) {
     if (!handlers.has(channel)) handlers.set(channel, new Set())
     handlers.get(channel)!.add(cb)
-    pendingSubs.set(channel, { symbol })
+
+    // FIX #8: сохраняем все символы, а не только последний
+    if (!pendingSubs.has(channel)) pendingSubs.set(channel, new Set())
+    pendingSubs.get(channel)!.add(symbol)
 
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'subscribe', channels: [channel], symbol }))
@@ -74,6 +84,9 @@ export function useWsClient() {
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'unsubscribe', channels: [channel], symbol }))
       }
+    } else {
+      // FIX #8: удаляем только этот символ
+      pendingSubs.get(channel)?.delete(symbol)
     }
   }
 

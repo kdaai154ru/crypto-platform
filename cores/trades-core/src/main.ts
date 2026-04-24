@@ -31,11 +31,11 @@ const VALKEY_OPTS = {
 
 const sub = new Valkey(VALKEY_OPTS);
 const pub = new Valkey(VALKEY_OPTS);
-const hb = new Valkey(VALKEY_OPTS);
+const hb  = new Valkey(VALKEY_OPTS);
 
 sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error'));
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
-hb.on('error', (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
+hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
 const chWriter = new ClickHouseTradesWriter(
   log,
@@ -43,16 +43,25 @@ const chWriter = new ClickHouseTradesWriter(
   env.CLICKHOUSE_PORT,
   env.CLICKHOUSE_DB
 );
+
+// FIX #4: writeBatch теперь с catch — ошибки CH логируются и считаются в метриках
+// Было: ошибки проглатывались, messagesFailedCounter не инкрементировался
 const processor = new TradeProcessor(
   log,
-  (batch) => chWriter.writeBatch(batch),
+  async (batch) => {
+    try {
+      await chWriter.writeBatch(batch);
+    } catch (err) {
+      log.error({ err, count: batch.length }, 'ClickHouse writeBatch failed');
+      messagesFailedCounter.inc({ core: 'trades-core', channel: 'clickhouse' });
+    }
+  },
   (delta) => pub.publish('trades:delta', JSON.stringify(delta))
 );
 
 let metricsServer: MetricsServer | null = null;
 
 async function start() {
-  // Запуск метрик-сервера
   metricsServer = await createMetricsServer(env.METRICS_PORT);
   log.info({ port: env.METRICS_PORT }, 'Metrics server started');
 
@@ -63,52 +72,37 @@ async function start() {
   sub.on('message', (_ch: string, msg: string) => {
     try {
       const trade = JSON.parse(msg) as NormalizedTrade;
-      
-      // Инкремент обработанных сообщений
       messagesProcessedCounter.inc({ core: 'trades-core', channel: 'norm:trades' });
-      
-      // Расчёт задержки относительно биржевого времени (trade.ts)
+
       if (trade.ts) {
         const lag = Date.now() - trade.ts;
         pipelineLagGauge.set({ core: 'trades-core' }, lag);
       }
-      
+
       processor.process(trade);
-      pub.publish('trades:stream', msg);
-      if (trade.isLarge) {
-        pub.publish('trades:large', msg);
-      }
     } catch (e) {
       log.error(e);
-      messagesFailedCounter.inc({
-        core: 'trades-core',
-        channel: 'norm:trades',
-        reason: 'parse_error',
-      });
+      messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades' });
     }
   });
 
-    setInterval(async () => {
-      try {
-        await hb.set('heartbeat:trades-core', Date.now().toString(), 'EX', 30);
-      } catch (err) {
-        log.warn({ err }, 'heartbeat failed');
-      }
-    }, 5_000);
   const shutdown = async () => {
     log.info('Shutting down trades-core...');
-    processor.destroy();
+    await processor.flush();
     sub.quit();
     pub.quit();
     hb.quit();
-    if (metricsServer) {
-      await metricsServer.close();
-    }
+    if (metricsServer) await metricsServer.close();
     process.exit(0);
   };
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  setInterval(
+    () => hb.set('heartbeat:trades-core', Date.now().toString(), 'EX', 30),
+    5_000,
+  );
 
   log.info('trades-core started');
 }
