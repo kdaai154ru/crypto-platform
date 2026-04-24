@@ -6,19 +6,21 @@ import type Valkey from 'iovalkey'
 export interface AlertEvent { ruleId:string; symbol:string; metric:string; value:number; ts:number }
 
 const PREV_VALUES_KEY = 'alert:prev_values';
-// TTL 24 часа — чтобы stale значения не жили вечно
 const PREV_VALUES_TTL = 86_400;
 
 export class AlertEvaluator {
-  // in-memory кэш + персистирование в Redis
   private memCache = new Map<string, number>()
+
+  // FIX: cooldown state lives here, NOT on rule objects.
+  // Rule objects are replaced wholesale by loadRules() — mutating them
+  // directly causes lost cooldown state and potential read-of-stale-object bugs.
+  private readonly lastTriggered = new Map<string, number>()
 
   constructor(
     private readonly log: Logger,
     private readonly db: Valkey
   ) {}
 
-  // Вызывается один раз при старте — прогревает кэш из Redis
   async loadPrevValues(): Promise<void> {
     try {
       const hash = await this.db.hgetall(PREV_VALUES_KEY);
@@ -33,43 +35,49 @@ export class AlertEvaluator {
     }
   }
 
-  evaluate(rules: AlertRule[], metric: string, symbol: string, value: number): AlertEvent[] {
+  evaluate(rules: readonly AlertRule[], metric: string, symbol: string, value: number): AlertEvent[] {
     const cacheKey = `${symbol}:${metric}`;
-
-    // FIX #9: NaN в качестве sentinel для первого значения
-    // При prev=value (старое поведение) cross_up/cross_down никогда не срабатывали
-    // если значение уже за порогом при старте — первый тик был пропущен.
-    // С NaN: !isNaN(prev) === false при первом значении — cross не срабатывает (корректно).
-    // Со второго тика: prev=реальное значение — cross срабатывает правильно.
     const prev: number = this.memCache.has(cacheKey)
       ? this.memCache.get(cacheKey)!
       : NaN
 
     this.memCache.set(cacheKey, value)
-    // Персистируем асинхронно — не блокируем evaluate()
     this.db.hset(PREV_VALUES_KEY, cacheKey, String(value))
       .then(() => this.db.expire(PREV_VALUES_KEY, PREV_VALUES_TTL))
       .catch((e: unknown) => this.log.warn(e, 'failed to persist prevValue'))
 
     const now = Date.now()
     const events: AlertEvent[] = []
+
     for (const rule of rules) {
       if (!rule.enabled || rule.symbol !== symbol || rule.metric !== metric) continue
-      if (rule.lastTriggered && now - rule.lastTriggered < rule.cooldownMs) continue
+
+      // FIX: read cooldown from our own Map, not from rule.lastTriggered
+      const lastTs = this.lastTriggered.get(rule.id) ?? 0
+      if (now - lastTs < rule.cooldownMs) continue
+
       const t = rule.threshold
       const fired =
         rule.condition === 'gt'         ? value > t :
         rule.condition === 'lt'         ? value < t :
         rule.condition === 'gte'        ? value >= t :
         rule.condition === 'lte'        ? value <= t :
-        // FIX #9: !isNaN(prev) — без предыдущего реального значения cross не срабатывает
         rule.condition === 'cross_up'   ? !isNaN(prev) && prev < t && value >= t :
         rule.condition === 'cross_down' ? !isNaN(prev) && prev > t && value <= t : false
+
       if (fired) {
-        events.push({ ruleId:rule.id, symbol, metric, value, ts:now })
-        rule.lastTriggered = now
+        events.push({ ruleId: rule.id, symbol, metric, value, ts: now })
+        // FIX: write to our own Map — never mutate the rule object
+        this.lastTriggered.set(rule.id, now)
       }
     }
     return events
+  }
+
+  // Called after loadRules() to prune stale entries from dead rules
+  pruneLastTriggered(activeRuleIds: Set<string>): void {
+    for (const id of this.lastTriggered.keys()) {
+      if (!activeRuleIds.has(id)) this.lastTriggered.delete(id)
+    }
   }
 }
