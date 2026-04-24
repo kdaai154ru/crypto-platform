@@ -113,7 +113,8 @@ sub.on('message', (_: string, msg: string) => {
   }
 });
 
-setInterval(async () => {
+// FIX: save ref so clearInterval can run in shutdown
+const publishInterval = setInterval(async () => {
   if (publishDisabled) {
     log.warn('screener publish disabled due to repeated errors, skipping');
     return;
@@ -145,12 +146,16 @@ setInterval(async () => {
   }
 }, 30_000);
 
-setInterval(
+// FIX: save ref so clearInterval can run in shutdown
+const hbInterval = setInterval(
   () => hb.set('heartbeat:screener-core', Date.now().toString(), 'EX', 30),
   5_000,
 );
 
 const shutdown = async () => {
+  // FIX: clear both timers before quitting connections
+  clearInterval(publishInterval);
+  clearInterval(hbInterval);
   await sub.quit();
   await pub.quit();
   await hb.quit();
