@@ -28,9 +28,15 @@ const CHANNEL_MAP: Record<string, string> = {
 const STREAM_KEYS = Object.keys(CHANNEL_MAP);
 const CONSUMER_GROUP = 'ws-gateway';
 const CONSUMER_NAME = `${os.hostname()}-${process.pid}`;
-const POLL_INTERVAL_MS = 100;
 const BLOCK_MS = 100;
 const COUNT = 100;
+const POLL_INTERVAL_MS = 1000;
+
+// FIX: PEL dead-letter constants
+const PEL_CLAIM_IDLE_MS = 60_000;     // сообщение считается зависшим после 60s
+const PEL_CLAIM_COUNT = 50;           // за одну итерацию reclaim не более 50
+const MAX_DELIVERY_COUNT = 3;         // после 3 попыток — dead-letter (XACK + log)
+const PEL_RECLAIM_INTERVAL_MS = 60_000;
 
 interface StreamMessage {
   type: string;
@@ -41,6 +47,7 @@ export class ValkeyStreams {
   private subscriber: Valkey;
   private isRunning = true;
   private logger: Logger;
+  private reclaimTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     valkeyOpts: { host: string; port: number; retryStrategy?: (times: number) => number },
@@ -48,7 +55,6 @@ export class ValkeyStreams {
     logger: Logger
   ) {
     this.logger = logger.child({ component: 'ValkeyStreams' });
-    // FIX #1: ESM import вместо require() — устраняет ReferenceError в ESM-контексте
     this.subscriber = new Valkey(valkeyOpts);
 
     this.subscriber.on('error', (err: Error) => {
@@ -59,10 +65,9 @@ export class ValkeyStreams {
       this.logger.info('Valkey subscriber ready, setting up consumer groups');
       try {
         await this.initializeConsumerGroups();
-        // FIX #2: processPendingMessages без BLOCK — не блокирует event loop при reconnect
         await this.processPendingMessages();
-        // FIX #3: pollLoop через рекурсивный setTimeout — исключает параллельные итерации
         if (this.isRunning) {
+          this.startReclaimTimer();
           this.pollLoop();
         }
       } catch (err) {
@@ -85,49 +90,107 @@ export class ValkeyStreams {
     }
   }
 
-  // FIX #2: БЕЗ BLOCK — читаем накопившиеся pending сообщения (id='0') синхронно
   private async processPendingMessages(): Promise<void> {
     try {
-      const streamKeys = STREAM_KEYS;
-      const ids = streamKeys.map(() => '0');
+      const ids = STREAM_KEYS.map(() => '0');
       const results = await this.subscriber.xreadgroup(
         'GROUP', CONSUMER_GROUP, CONSUMER_NAME,
         'COUNT', COUNT,
         'STREAMS',
-        ...streamKeys,
+        ...STREAM_KEYS,
         ...ids
       );
-      if (results) {
-        await this.handleStreamResults(results);
-      }
+      if (results) await this.handleStreamResults(results);
     } catch (err) {
       this.logger.error({ err }, 'Failed to read pending messages');
     }
   }
 
-  // FIX #3: рекурсивный цикл через await + setTimeout вместо setInterval+async
-  // Гарантирует: следующая итерация начинается ТОЛЬКО после завершения текущей
+  // FIX: запускаем таймер reclaim PEL
+  private startReclaimTimer(): void {
+    this.reclaimTimer = setInterval(() => {
+      this.reclaimStalePending().catch((err) => {
+        this.logger.error({ err }, 'reclaimStalePending error');
+      });
+    }, PEL_RECLAIM_INTERVAL_MS);
+  }
+
+  /**
+   * FIX: XAUTOCLAIM — забрать сообщения, которые висят в PEL дольше
+   * PEL_CLAIM_IDLE_MS без XACK (т.е. consumer упал или завис).
+   * Если сообщение доставлено > MAX_DELIVERY_COUNT раз — dead-letter:
+   * пишем warn-лог и XACK без обработки.
+   */
+  private async reclaimStalePending(): Promise<void> {
+    for (const stream of STREAM_KEYS) {
+      try {
+        // XAUTOCLAIM: iovalkey возвращает [nextStartId, [[id, fields], ...]]
+        const result = await (this.subscriber as unknown as {
+          xautoclaim(stream: string, group: string, consumer: string,
+            minIdleTime: number, start: string,
+            countKeyword: string, count: number): Promise<[string, Array<[string, string[]]>]>
+        }).xautoclaim(
+          stream, CONSUMER_GROUP, CONSUMER_NAME,
+          PEL_CLAIM_IDLE_MS, '0-0',
+          'COUNT', PEL_CLAIM_COUNT
+        );
+
+        if (!result || !Array.isArray(result[1]) || result[1].length === 0) continue;
+
+        const messages = result[1];
+        const deadLetterIds: string[] = [];
+        const retryMessages: Array<[string, string[]]> = [];
+
+        // Проверяем delivery count через XPENDING
+        for (const [msgId, fields] of messages) {
+          const pending = await this.subscriber.xpending(
+            stream, CONSUMER_GROUP, msgId, msgId, 1
+          ) as Array<[string, string, number, number]>;
+
+          const deliveryCount = pending?.[0]?.[3] ?? 0;
+          if (deliveryCount > MAX_DELIVERY_COUNT) {
+            this.logger.warn(
+              { stream, msgId, deliveryCount },
+              'Dead-letter: message exceeded max delivery count, discarding'
+            );
+            deadLetterIds.push(msgId);
+          } else {
+            retryMessages.push([msgId, fields]);
+          }
+        }
+
+        // XACK dead-letter сразу без обработки
+        if (deadLetterIds.length > 0) {
+          await this.subscriber.xack(stream, CONSUMER_GROUP, ...deadLetterIds);
+        }
+
+        // Повторно обрабатываем остальные
+        if (retryMessages.length > 0) {
+          await this.handleStreamResults([[stream, retryMessages]]);
+        }
+      } catch (err) {
+        this.logger.error({ stream, err }, 'Error in reclaimStalePending for stream');
+      }
+    }
+  }
+
   private async pollLoop(): Promise<void> {
     while (this.isRunning) {
       try {
-        const streamKeys = STREAM_KEYS;
-        const ids = streamKeys.map(() => '>');
+        const ids = STREAM_KEYS.map(() => '>');
         const results = await this.subscriber.xreadgroup(
           'GROUP', CONSUMER_GROUP, CONSUMER_NAME,
           'COUNT', COUNT,
           'BLOCK', BLOCK_MS,
           'STREAMS',
-          ...streamKeys,
+          ...STREAM_KEYS,
           ...ids
         );
-        if (results) {
-          await this.handleStreamResults(results);
-        }
+        if (results) await this.handleStreamResults(results);
       } catch (err: unknown) {
         const e = err as Error;
         if (e.message?.includes('NORECONNECT') || e.message?.includes('Connection is closed')) {
           this.logger.warn('Valkey connection lost during poll, waiting for reconnect');
-          // При потере соединения ждём дольше чтобы не спамить
           await new Promise(r => setTimeout(r, 1000));
         } else {
           this.logger.error({ err }, 'Stream polling error');
@@ -178,8 +241,8 @@ export class ValkeyStreams {
               data[fields[i] as string] = fields[i + 1];
             }
           }
-        } catch (parseError) {
-          this.logger.warn({ streamKey, msgId }, 'Failed to parse message data, XACKing anyway');
+        } catch {
+          this.logger.warn({ streamKey, msgId }, 'Failed to parse message, XACKing anyway');
           msgIds.push(msgId);
           continue;
         }
@@ -191,25 +254,20 @@ export class ValkeyStreams {
         for (const client of clients) {
           if (!client.ws) continue;
           const sendResult = client.ws.send(payload);
-
           if (sendResult === UWS_SEND_BACKPRESSURE || sendResult === UWS_SEND_DROPPED) {
             wsBackpressureDropsCounter.inc({ channel: wsChannel });
           } else {
             wsMessagesSentCounter.inc({ channel: wsChannel });
             if (messageTs !== undefined) {
               const latencyMs = now - messageTs;
-              if (latencyMs >= 0) {
-                wsMessageLatencyHistogram.observe({ channel: wsChannel }, latencyMs);
-              }
+              if (latencyMs >= 0) wsMessageLatencyHistogram.observe({ channel: wsChannel }, latencyMs);
             }
           }
           this.connectionManager.updatePing(client.id);
         }
-
         msgIds.push(msgId);
       }
 
-      // Батчевый XACK для всего потока — один roundtrip
       if (msgIds.length > 0) {
         await this.subscriber.xack(streamKey, CONSUMER_GROUP, ...msgIds);
       }
@@ -218,6 +276,11 @@ export class ValkeyStreams {
 
   async close(): Promise<void> {
     this.isRunning = false;
+    // FIX: очищаем таймер reclaim при shutdown
+    if (this.reclaimTimer) {
+      clearInterval(this.reclaimTimer);
+      this.reclaimTimer = null;
+    }
     try {
       await this.subscriber.quit();
       this.logger.info('ValkeyStreams subscriber closed');
