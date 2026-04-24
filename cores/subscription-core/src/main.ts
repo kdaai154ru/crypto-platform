@@ -27,10 +27,6 @@ const manager = new SubscriptionManager(log, 60_000);
 manager.on('start_stream', (sym: string, ch: string[]) => pub.publish('stream:start', JSON.stringify({ symbol: sym, channels: ch })));
 manager.on('stop_stream',  (sym: string)                => pub.publish('stream:stop',  JSON.stringify({ symbol: sym })));
 
-/**
- * Отвечаем на exchange:ready одним сообщением stream:replay со всеми
- * активными парами. exchange-core обрабатывает их все сразу.
- */
 function replayToExchange(): void {
   const active = manager.getActivePairs();
   if (active.length === 0) {
@@ -52,16 +48,27 @@ sub.on('message', (ch: string, msg: string) => {
       const { viewerId, symbol } = JSON.parse(msg);
       manager.unsubscribe(viewerId, symbol);
     } else if (ch === 'exchange:ready') {
-      // exchange-core запустился/перезапустился и готов принимать стримы
       replayToExchange();
     }
   } catch (e) { log.error(e); }
 });
 
-setInterval(() => {
+const hbInterval = setInterval(() => {
   hb.set('heartbeat:subscription-core', Date.now().toString(), 'EX', 30);
   hb.set('stat:active_pairs', manager.getActivePairCount().toString(), 'EX', 30);
 }, 5_000);
 
-process.on('SIGTERM', () => { sub.quit(); pub.quit(); hb.quit(); process.exit(0); });
+const shutdown = () => {
+  // FIX: сначала destroy() очищает все idleTimers, потом закрываем соединения
+  clearInterval(hbInterval);
+  manager.destroy();
+  sub.quit();
+  pub.quit();
+  hb.quit();
+  process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT',  shutdown);
+
 log.info('subscription-core started');

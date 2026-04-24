@@ -34,7 +34,6 @@ export class SubscriptionManager extends EventEmitter {
       state = { symbol, refCount: 0, viewers: new Set(), channels: [], status: 'stopped' }
       this.pairs.set(symbol, state)
     }
-    // Обновляем список каналов если передан
     if (channels.length > 0) {
       state.channels = [...new Set([...state.channels, ...channels])]
     }
@@ -74,13 +73,21 @@ export class SubscriptionManager extends EventEmitter {
   getState(symbol: string): PairState|undefined { return this.pairs.get(symbol) }
   getActivePairCount(): number { return [...this.pairs.values()].filter(s=>s.status==='active').length }
 
-  /**
-   * Возвращает все активные пары с их каналами —
-   * используется для replay stream:start после рестарта exchange-core.
-   */
   getActivePairs(): Array<{ symbol: string; channels: string[] }> {
     return [...this.pairs.values()]
       .filter(s => s.status === 'active')
       .map(s => ({ symbol: s.symbol, channels: s.channels }))
+  }
+
+  // FIX: очистка всех idleTimer при shutdown — предотвращает emit('stop_stream') после quit()
+  destroy(): void {
+    for (const state of this.pairs.values()) {
+      if (state.idleTimer) {
+        clearTimeout(state.idleTimer)
+        state.idleTimer = undefined
+      }
+    }
+    this.pairs.clear()
+    this.removeAllListeners()
   }
 }
