@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "nuxt dev",
+    "dev": "nuxt dev --port 3001",
     "build": "nuxt build",
+    "start": "node .output/server/index.mjs",
     "generate": "nuxt generate",
-    "typecheck": "nuxt typecheck"
+    "typecheck": "nuxt typecheck",
+    "clean": "rm -rf .nuxt .output dist"
   },
   "dependencies": {
     "@pinia/nuxt": "^0.10.1",
