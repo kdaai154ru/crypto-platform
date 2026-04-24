@@ -31,8 +31,16 @@ export class OHLCVAggregator {
 
   process(candle: NormalizedCandle): NormalizedCandle {
     const tf = candle.tf as Timeframe;
+
+    // FIX #24: защита от неизвестного таймфрейма — TF_MS[tf] вернёт undefined → NaN bucket
+    const tfMs = TF_MS[tf];
+    if (!tfMs) {
+      // возвращаем свечу as-is, не агрегируем
+      return candle;
+    }
+
     const key = `${candle.symbol}:${candle.exchange}:${tf}`;
-    const bucket = Math.floor(candle.ts / TF_MS[tf]) * TF_MS[tf];
+    const bucket = Math.floor(candle.ts / tfMs) * tfMs;
 
     let state = this.states.get(key);
     if (!state || state.ts !== bucket) {

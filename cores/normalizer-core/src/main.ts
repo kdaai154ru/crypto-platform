@@ -23,7 +23,18 @@ sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
-sub.subscribe('raw:trades', 'raw:ticker', 'raw:candle', (e: unknown) => { if (e) log.error(e); });
+// FIX #11: подписки восстанавливаются при каждом reconnect через событие 'ready'
+// без этого после обрыва TCP Valkey молча перестаёт доставлять сообщения
+function setupSubscriptions(): void {
+  sub.subscribe('raw:trades', 'raw:ticker', 'raw:candle', (e: unknown) => {
+    if (e) log.error(e, 'subscribe error');
+  });
+}
+
+sub.on('ready', () => {
+  log.info('sub reconnected — resubscribing to raw:* channels');
+  setupSubscriptions();
+});
 
 sub.on('message', (channel: string, msg: string) => {
   try {
@@ -44,4 +55,6 @@ sub.on('message', (channel: string, msg: string) => {
 setInterval(() => hb.set('heartbeat:normalizer-core', Date.now().toString(), 'EX', 30), 5_000);
 
 process.on('SIGTERM', () => { sub.quit(); pub.quit(); hb.quit(); process.exit(0); });
+process.on('SIGINT',  () => { sub.quit(); pub.quit(); hb.quit(); process.exit(0); });
+
 log.info('normalizer-core started');

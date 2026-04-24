@@ -86,10 +86,23 @@ const monitor = new HealthMonitor(
   log
 );
 
+// FIX #22: расширен IP whitelist — добавлены 172.16-172.31 (Docker default bridge)
+// и 192.168.x.x (Docker custom networks / host LAN)
+function isPrivateIp(ip: string): boolean {
+  if (!ip) return false;
+  if (ip === '127.0.0.1' || ip === '::1') return true;
+  if (ip.startsWith('10.')) return true;
+  // 172.16.0.0/12 → 172.16.x.x – 172.31.x.x
+  const m = ip.match(/^172\.(\d+)\./);
+  if (m && parseInt(m[1]!, 10) >= 16 && parseInt(m[1]!, 10) <= 31) return true;
+  if (ip.startsWith('192.168.')) return true;
+  return false;
+}
+
 const ipWhitelist = (req: any, reply: any, done: any) => {
-  const ip = req.ip || req.socket.remoteAddress;
-  const allowed = ip === '127.0.0.1' || ip === '::1' || (ip && ip.startsWith('10.'));
-  if (!allowed) {
+  const ip: string = req.ip || req.socket?.remoteAddress || '';
+  if (!isPrivateIp(ip)) {
+    log.warn({ ip }, 'Forbidden: IP not in private range');
     reply.status(403).send({ error: 'Forbidden' });
   } else {
     done();

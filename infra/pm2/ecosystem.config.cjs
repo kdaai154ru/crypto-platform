@@ -7,6 +7,8 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 
+// FIX #31: лимиты памяти скорректированы под реальное потребление сервисов
+// Сервисы с буферами (aggregator, trades, screener) получили увеличенные лимиты
 const base = {
   cwd:                       ROOT,
   instances:                 1,
@@ -29,11 +31,15 @@ module.exports = {
       ...base,
       name:   "orchestrator",
       script: path.join(ROOT, "apps/orchestrator/dist/main.js"),
+      // Orchestrator: лёгкий HTTP сервер + мониторинг, 512M достаточно
     },
     {
       ...base,
-      name:   "ws-gateway",
-      script: path.join(ROOT, "apps/ws-gateway/dist/main.js"),
+      name:               "ws-gateway",
+      script:             path.join(ROOT, "apps/ws-gateway/dist/main.js"),
+      // ws-gateway: uWebSockets держит соединения в памяти
+      // при 10k клиентах ~200-300MB, 768M с запасом
+      max_memory_restart: "768M",
     },
 
     // ─── FRONTEND ────────────────────────────────────────────
@@ -55,6 +61,8 @@ module.exports = {
       ...base,
       name:               "exchange-core",
       script:             path.join(ROOT, "cores/exchange-core/dist/main.js"),
+      // exchange-core: CCXT держит WS соединения + буферы по каждому символу
+      // 8G — агрессивно, но CCXT при 100+ символах реально съедает много
       max_restarts:       20,
       max_memory_restart: "8G",
       listen_timeout:     15000,
@@ -65,39 +73,56 @@ module.exports = {
     },
     {
       ...base,
-      name:   "normalizer-core",
-      script: path.join(ROOT, "cores/normalizer-core/dist/main.js"),
+      name:               "normalizer-core",
+      script:             path.join(ROOT, "cores/normalizer-core/dist/main.js"),
+      // Stateless transformer — 512M достаточно
     },
     {
       ...base,
-      name:   "subscription-core",
-      script: path.join(ROOT, "cores/subscription-core/dist/main.js"),
+      name:               "subscription-core",
+      script:             path.join(ROOT, "cores/subscription-core/dist/main.js"),
+      // Subscription manager: Map символов + таймеры, 512M достаточно
     },
     {
       ...base,
-      name:   "aggregator-core",
-      script: path.join(ROOT, "cores/aggregator-core/dist/main.js"),
+      name:               "aggregator-core",
+      script:             path.join(ROOT, "cores/aggregator-core/dist/main.js"),
+      // aggregator-core: держит CandleState Map для всех символов × таймфреймов
+      // при 500 символах × 13 tf = 6500 записей — нужно 1G
+      max_memory_restart: "1G",
     },
     {
       ...base,
-      name:   "trades-core",
-      script: path.join(ROOT, "cores/trades-core/dist/main.js"),
+      name:               "trades-core",
+      script:             path.join(ROOT, "cores/trades-core/dist/main.js"),
+      // trades-core: TradeProcessor буфер до 50k трейдов + ClickHouse клиент
+      // при пиковой нагрузке буфер может занять ~200-300MB
+      max_memory_restart: "1G",
     },
     {
       ...base,
-      name:   "indicator-core",
-      script: path.join(ROOT, "cores/indicator-core/dist/main.js"),
+      name:               "indicator-core",
+      script:             path.join(ROOT, "cores/indicator-core/dist/main.js"),
+      // indicator-core: вычисления RSI/MACD/etc — нужны скользящие окна
+      max_memory_restart: "768M",
     },
     {
       ...base,
       name:               "screener-core",
       script:             path.join(ROOT, "cores/screener-core/dist/main.js"),
-      max_memory_restart: "1G",
+      // screener-core: хранит свечи для RSI по всем символам × tf (warm-up)
+      // при 1000 символах × 6 tf × 200 свечей = 1.2M объектов — нужно 2G
+      max_memory_restart: "2G",
+      env: {
+        NODE_ENV:     "production",
+        NODE_OPTIONS: "--max-old-space-size=1536",
+      },
     },
     {
       ...base,
-      name:   "alert-core",
-      script: path.join(ROOT, "cores/alert-core/dist/main.js"),
+      name:               "alert-core",
+      script:             path.join(ROOT, "cores/alert-core/dist/main.js"),
+      // alert-core: prevValues Map + правила — 512M достаточно
     },
     {
       ...base,

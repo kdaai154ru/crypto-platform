@@ -28,7 +28,8 @@ pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 db.on('error',  (e: Error) => log.warn({ err: e.message }, 'db connection error'));
 
-const evaluator  = new AlertEvaluator(log);
+// FIX #17: передаём db в evaluator для персистирования prevValues
+const evaluator  = new AlertEvaluator(log, db);
 const dispatcher = new NotificationDispatcher(log);
 
 let rules: AlertRule[] = [];
@@ -43,7 +44,6 @@ async function loadRules(): Promise<void> {
     }
     const loaded: AlertRule[] = [];
     for (const [id, raw] of Object.entries(hash)) {
-      // FIX: используем parseAlertRule с zod-валидацией вместо небезопасного JSON.parse as AlertRule
       const rule = parseAlertRule(raw);
       if (!rule) {
         log.warn({ id }, 'invalid or malformed AlertRule, skipping');
@@ -55,7 +55,6 @@ async function loadRules(): Promise<void> {
     log.info({ count: rules.length }, 'alert rules loaded from Redis');
   } catch (e) {
     log.error(e, 'failed to load alert rules from Redis');
-    // сохраняем старые правила — не сбрасываем до пустого массива
   }
 }
 
@@ -96,6 +95,8 @@ process.on('SIGINT',  () => { sub.quit(); pub.quit(); hb.quit(); db.quit(); proc
 
 async function start(): Promise<void> {
   await loadRules();
+  // FIX #17: восстанавливаем prevValues из Redis до начала обработки событий
+  await evaluator.loadPrevValues();
   log.info('alert-core started');
 }
 

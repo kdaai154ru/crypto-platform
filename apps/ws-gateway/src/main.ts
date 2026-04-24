@@ -23,9 +23,21 @@ const env = loadEnv(
     .merge(z.object({
       WS_PORT: z.coerce.number().default(4000),
       METRICS_PORT: z.coerce.number().default(4001),
+      // FIX #14: список разрешённых Origin для защиты от CSWSH
+      // Пустая строка = Origin не проверяется (режим разработки)
+      WS_ALLOWED_ORIGINS: z.string().optional(),
     }))
 );
 const log = createLogger('ws-gateway');
+
+// FIX #14: разбираем список разрешённых Origins из env
+const allowedOrigins: Set<string> | null = env.WS_ALLOWED_ORIGINS
+  ? new Set(env.WS_ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean))
+  : null;
+
+if (!allowedOrigins) {
+  log.warn('WS_ALLOWED_ORIGINS not set — Origin validation disabled (unsafe for production)');
+}
 
 
 if (!env.JWT_SECRET) {
@@ -43,7 +55,7 @@ const fanout = new ValkeyStreams(valkeyOpts, cm, log);
 valkeyPub.on('error', (e: Error) => log.warn({ err: e.message }, 'valkeyPub error'));
 
 
-// Rate limiting — FIX: ограничиваем размер Map чтобы не допустить OOM при IPv6 DDoS
+// Rate limiting — ограничиваем размер Map чтобы не допустить OOM при IPv6 DDoS
 const MAX_RATE_ENTRIES = 10_000;
 const connectionCounts = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT = 5;
@@ -67,7 +79,7 @@ const cleanupInterval = setInterval(() => {
 }, 60_000);
 
 
-// FIX: uWS.getRemoteAddressAsText() возвращает ArrayBuffer, не строку
+// uWS.getRemoteAddressAsText() возвращает ArrayBuffer, не строку
 function getClientIp(ws: uWS.WebSocket<unknown>): string {
   try {
     const buf = (ws as any).getRemoteAddressAsText?.();
@@ -79,9 +91,9 @@ function getClientIp(ws: uWS.WebSocket<unknown>): string {
 }
 
 
-// FIX: timingSafeEqual для защиты от timing attack
-// FIX: проверка nbf (не использовать токен раньше времени выпуска)
-// FIX: проверка header.typ
+// timingSafeEqual для защиты от timing attack
+// проверка nbf (не использовать токен раньше времени выпуска)
+// проверка header.alg === 'HS256'
 function verifyJwt(token: string, secret: string): { sub: string } | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
@@ -133,6 +145,14 @@ const app = uWS.App().ws('/*', {
 
 
   upgrade(res, req, context) {
+    // FIX #14: Origin validation — защита от Cross-Site WebSocket Hijacking (CSWSH)
+    const origin = req.getHeader('origin');
+    if (allowedOrigins && origin && !allowedOrigins.has(origin)) {
+      log.warn({ origin }, 'WebSocket upgrade rejected: Origin not allowed');
+      res.writeStatus('403 Forbidden').end('Origin not allowed');
+      return;
+    }
+
     const query = req.getQuery();
     const params = query ? new URLSearchParams(query) : null;
     const token = params?.get('token') ?? '';
@@ -193,7 +213,6 @@ const app = uWS.App().ws('/*', {
     cm.add(id, ws);
     ws.send(JSON.stringify({ type: 'welcome', clientId: id }));
     wsConnectionsTotal.inc();
-    // FIX: cm.count() вместо несуществующего cm.size()
     activeClientsGauge.set(cm.count());
   },
 
@@ -206,7 +225,6 @@ const app = uWS.App().ws('/*', {
       const data = JSON.parse(text) as { type?: string; channels?: string[]; symbol?: string };
 
 
-      // FIX: диспетчер вместо несуществующего subHdlr.handle()
       if (!data || typeof data.type !== 'string') {
         ws.send(JSON.stringify({ type: 'error', message: 'Missing message type' }));
         return;
@@ -229,9 +247,7 @@ const app = uWS.App().ws('/*', {
   close(ws) {
     const id = (ws as any).__id as string;
     cm.remove(id);
-    // FIX: unsubscribeAll() вместо несуществующего subHdlr.cleanup()
     subHdlr.unsubscribeAll(id);
-    // FIX: cm.count() вместо несуществующего cm.size()
     activeClientsGauge.set(cm.count());
   },
 });
@@ -246,10 +262,6 @@ async function start(): Promise<void> {
     log.fatal({ err: e }, 'Failed to start metrics server, aborting');
     process.exit(1);
   }
-
-
-  // FIX: fanout не имеет метода start() — polling стартует автоматически через 'ready' event subscriber'a
-  // Убран несуществующий вызов fanout.start()
 
 
   await new Promise<void>((resolve, reject) => {
@@ -267,7 +279,6 @@ async function start(): Promise<void> {
   const shutdown = async () => {
     log.info('Shutting down ws-gateway...');
     clearInterval(cleanupInterval);
-    // FIX: await fanout.close() вместо несуществующего fanout.stop()
     await fanout.close();
     valkeyPub.quit();
     await metricsServer!.close();

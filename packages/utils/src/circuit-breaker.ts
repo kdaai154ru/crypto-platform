@@ -1,4 +1,6 @@
 // packages/utils/src/circuit-breaker.ts
+// FIX #32: добавлен публичный метод open() — вызывается из connector.ts handleStreamError()
+// без него cb.open() в connector.ts падает с TypeError: cb.open is not a function
 export type CBState = 'CLOSED'|'OPEN'|'HALF_OPEN'
 export interface CBOptions { failureThreshold?:number; recoveryTimeout?:number; successThreshold?:number }
 
@@ -28,10 +30,23 @@ export class CircuitBreaker {
       if(this.successes>=this.opts.successThreshold) this.state='CLOSED'
     }
   }
+
   private onFailure() {
     this.failures++
-    if(this.failures>=this.opts.failureThreshold) { this.state='OPEN'; this.openAt=Date.now() }
+    if(this.failures>=this.opts.failureThreshold) {
+      this.state='OPEN'
+      this.openAt=Date.now()
+    }
   }
+
+  // FIX #32: публичный метод — принудительно открывает breaker
+  // используется в ExchangeConnector.handleStreamError() при MAX_CONSECUTIVE_ERRORS
+  open(): void {
+    this.state = 'OPEN'
+    this.openAt = Date.now()
+    this.failures = this.opts.failureThreshold
+  }
+
   getState():CBState { return this.state }
   reset() { this.state='CLOSED'; this.failures=0; this.successes=0 }
 }

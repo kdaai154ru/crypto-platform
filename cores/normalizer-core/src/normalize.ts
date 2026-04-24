@@ -1,43 +1,92 @@
 // cores/normalizer-core/src/normalize.ts
-import type { NormalizedTrade, NormalizedTicker, NormalizedCandle, ExchangeId, Timeframe } from '@crypto-platform/types'
-import { normalizeSymbol } from '@crypto-platform/utils'
+// FIX #27: zod-валидация входящих raw:* сообщений
+// Без валидации невалидные данные от биржи молча публикуются дальше
+import { z } from 'zod';
+import type { NormalizedTrade, NormalizedCandle, NormalizedTicker, ExchangeId, Timeframe } from '@crypto-platform/types';
 
-const LARGE_TRADE_USD = 100_000
+// ─── Схемы входящих raw данных ───────────────────────────────────────────────
 
-function sizeLabel(usd:number): 'S'|'M'|'L'|'XL' {
-  if(usd>100_000) return 'XL'
-  if(usd>10_000)  return 'L'
-  if(usd>1_000)   return 'M'
-  return 'S'
-}
+const RawTradeSchema = z.object({
+  symbol:    z.string().min(1),
+  timestamp: z.number().positive(),
+  amount:    z.number().nonnegative(),
+  price:     z.number().positive(),
+  side:      z.enum(['buy', 'sell']).optional(),
+  exchange:  z.string().min(1),
+}).passthrough();
 
-export function normalizeTrade(raw:Record<string,unknown>, exchange:ExchangeId): NormalizedTrade|null {
-  const sym = normalizeSymbol(String(raw.symbol??''))
-  if(!sym) return null
-  const price = Number(raw.price??0), qty = Number(raw.amount??0)
-  const usdValue = price * qty
+const RawTickerSchema = z.object({
+  symbol:  z.string().min(1),
+  last:    z.number().positive().optional(),
+  bid:     z.number().positive().optional(),
+  ask:     z.number().positive().optional(),
+  volume:  z.number().nonnegative().optional(),
+  exchange: z.string().min(1),
+}).passthrough();
+
+const RawCandleSchema = z.object({
+  symbol:   z.string().min(1),
+  tf:       z.string().min(1),
+  exchange: z.string().min(1),
+  c: z.tuple([
+    z.number(), // timestamp
+    z.number(), // open
+    z.number(), // high
+    z.number(), // low
+    z.number(), // close
+    z.number(), // volume
+  ]),
+});
+
+// ─── Нормализаторы ────────────────────────────────────────────────────────────
+
+export function normalizeTrade(
+  raw: unknown,
+  exchange: ExchangeId
+): NormalizedTrade | null {
+  const parsed = RawTradeSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  const d = parsed.data;
   return {
-    symbol:sym, exchange, ts:Number(raw.timestamp??Date.now()),
-    side:String(raw.side??'buy')==='sell'?'sell':'buy',
-    price, qty, usdValue, isLarge:usdValue>=LARGE_TRADE_USD,
-    tradeId:String(raw.id??''), sizeLabel:sizeLabel(usdValue)
-  }
+    exchange,
+    symbol:   d.symbol,
+    price:    d.price,
+    amount:   d.amount,
+    side:     (d.side === 'buy' || d.side === 'sell') ? d.side : 'buy',
+    ts:       d.timestamp,
+    usdValue: d.price * d.amount,
+    isLarge:  d.price * d.amount > 100_000,
+  };
 }
 
-export function normalizeTicker(raw:Record<string,unknown>, exchange:ExchangeId): NormalizedTicker|null {
-  const sym = normalizeSymbol(String(raw.symbol??''))
-  if(!sym) return null
-  const bid=Number(raw.bid??0), ask=Number(raw.ask??0)
-  return { symbol:sym, exchange, ts:Number(raw.timestamp??Date.now()),
-    last:Number(raw.last??0), bid, ask, spread:ask-bid,
-    vol24h:Number(raw.quoteVolume??0), change24h:Number(raw.percentage??0),
-    high24h:Number(raw.high??0), low24h:Number(raw.low??0) }
+export function normalizeTicker(
+  raw: unknown,
+  exchange: ExchangeId
+): NormalizedTicker | null {
+  const parsed = RawTickerSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  const d = parsed.data;
+  return {
+    exchange,
+    symbol:  d.symbol,
+    last:    d.last ?? 0,
+    bid:     d.bid  ?? 0,
+    ask:     d.ask  ?? 0,
+    volume:  d.volume ?? 0,
+    ts:      Date.now(),
+  };
 }
 
-export function normalizeCandle(raw:number[], symbol:string, tf:Timeframe, exchange:ExchangeId, isClosed=false): NormalizedCandle|null {
-  const sym = normalizeSymbol(symbol)
-  if(!sym||raw.length<5) return null
-  return { symbol:sym, exchange, ts:raw[0]!, tf,
-    open:raw[1]!, high:raw[2]!, low:raw[3]!, close:raw[4]!,
-    volume:raw[5]??0, buyVolume:0, sellVolume:0, isClosed }
+export function normalizeCandle(
+  c: unknown,
+  symbol: string,
+  tf: Timeframe,
+  exchange: ExchangeId
+): NormalizedCandle | null {
+  const row = z.tuple([
+    z.number(), z.number(), z.number(), z.number(), z.number(), z.number(),
+  ]).safeParse(c);
+  if (!row.success) return null;
+  const [ts, open, high, low, close, volume] = row.data;
+  return { exchange, symbol, tf, ts, open, high, low, close, volume };
 }
