@@ -44,8 +44,7 @@ const chWriter = new ClickHouseTradesWriter(
   env.CLICKHOUSE_DB
 );
 
-// FIX #4: writeBatch теперь с catch — ошибки CH логируются и считаются в метриках
-// Было: ошибки проглатывались, messagesFailedCounter не инкрементировался
+// FIX #4: writeBatch с catch — ошибки CH логируются и считаются в метриках
 const processor = new TradeProcessor(
   log,
   async (batch) => {
@@ -60,6 +59,8 @@ const processor = new TradeProcessor(
 );
 
 let metricsServer: MetricsServer | null = null;
+// FIX #11: сохраняем ref — clearInterval в shutdown, чтобы не пытаться писать в закрытый hb
+let hbTimer: ReturnType<typeof setInterval> | null = null;
 
 async function start() {
   metricsServer = await createMetricsServer(env.METRICS_PORT);
@@ -88,6 +89,9 @@ async function start() {
 
   const shutdown = async () => {
     log.info('Shutting down trades-core...');
+    // FIX #11: останавливаем таймер ДО hb.quit() — нет попыток писать в hb после quit
+    if (hbTimer) clearInterval(hbTimer);
+    // FIX #3 (trade-buffer): processor.flush() дреинит буфер в ClickHouse
     await processor.flush();
     sub.quit();
     pub.quit();
@@ -99,7 +103,7 @@ async function start() {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  setInterval(
+  hbTimer = setInterval(
     () => hb.set('heartbeat:trades-core', Date.now().toString(), 'EX', 30),
     5_000,
   );
