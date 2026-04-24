@@ -1,29 +1,51 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "tasks": {
-    "build": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".nuxt/**", ".output/**"]
-    },
+  "pipeline": {
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "dependsOn": [],
+      "inputs": ["src/**", "*.ts", "*.json"]
     },
-    "start": {
+    "build": {
       "dependsOn": ["^build"],
-      "cache": false,
-      "persistent": true
+      "outputs": ["dist/**", ".next/**", ".nuxt/**"],
+      "inputs": ["src/**", "*.ts", "*.json"]
+    },
+    "type-check": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "*.ts", "*.json"]
     },
     "test": {
       "dependsOn": ["^build"],
-      "outputs": []
-    },
-    "typecheck": {
-      "dependsOn": ["^build"],
-      "outputs": []
+      "inputs": ["src/**", "*.test.ts", "*.test.tsx", "*.spec.ts"]
     },
     "clean": {
       "cache": false
+    },
+    "lint": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "*.ts", "*.json"]
     }
-  }
+  },
+  "globalDependencies": [
+    ".env",
+    "tsconfig.base.json"
+  ],
+  "globalEnv": [
+    "NODE_ENV",
+    "LOG_LEVEL",
+    "VALKEY_HOST",
+    "VALKEY_PORT",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "CLICKHOUSE_HOST",
+    "CLICKHOUSE_PORT",
+    "CLICKHOUSE_DB",
+    "WS_PORT",
+    "ORCHESTRATOR_PORT",
+    "JWT_SECRET",
+    "EXCHANGE_LIST",
+    "METRICS_PORT"
+  ]
 }

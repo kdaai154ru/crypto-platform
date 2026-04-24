@@ -5,23 +5,13 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "turbo run dev",
-    "dev:back": "turbo run dev --filter=!@crypto-platform/frontend",
-    "dev:front": "pnpm --filter @crypto-platform/frontend dev",
     "build": "turbo run build",
-    "build:back": "turbo run build --filter=!@crypto-platform/frontend",
-    "build:front": "pnpm --filter @crypto-platform/frontend build",
     "start": "turbo run start",
-    "start:all": "pm2 start infra/pm2/ecosystem.config.cjs",
-    "stop:all": "pm2 stop infra/pm2/ecosystem.config.cjs",
-    "restart:all": "pm2 restart infra/pm2/ecosystem.config.cjs",
-    "logs": "pm2 logs",
-    "status": "pm2 status",
     "clean": "turbo run clean",
     "lint": "turbo run lint",
     "test": "turbo run test",
-    "infra:up": "docker compose -f infra/docker/docker-compose.yml up -d",
-    "infra:down": "docker compose -f infra/docker/docker-compose.yml down",
-    "infra:logs": "docker compose -f infra/docker/docker-compose.yml logs -f"
+    "frontend:dev": "turbo dev --filter=@crypto-platform/frontend",
+    "frontend:build": "turbo build --filter=@crypto-platform/frontend"
   },
   "devDependencies": {
     "turbo": "2.5.4",

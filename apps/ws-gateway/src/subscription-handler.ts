@@ -1,84 +1,92 @@
 // apps/ws-gateway/src/subscription-handler.ts
-import type { ConnectionManager } from './connection-manager.js'
-import type Valkey from 'iovalkey'
-import type { Logger } from '@crypto-platform/logger'
-
-/**
- * Каналы без символа (системные): сообщения для них не отправляются
- * в subscription-core, они работают через отдельные процессы.
- */
-const SYSTEM_CHANNELS = new Set([
-  'trades:large', 'liquidations', 'whale:feed',
-  'screener:update', 'options:update', 'etf:latest', 'system:status',
-])
-
-/**
- * Извлекает symbol из канала.
- * Примеры:
- *   ticker:BTC/USDT            → BTC/USDT
- *   ohlcv:BTC/USDT:1m          → BTC/USDT
- *   trades:BTC/USDT            → BTC/USDT
- *   trades:delta:BTC/USDT      → BTC/USDT
- *   trades:large               → null  (системный)
- *   screener:update            → null  (системный)
- */
-function extractSymbol(channel: string): string | null {
-  if (SYSTEM_CHANNELS.has(channel)) return null
-  // Формат trades:delta:BTC/USDT — символ в позиции [2]
-  if (channel.startsWith('trades:delta:')) return channel.split(':').slice(2).join(':')
-  // Общий случай: префикс:SYMBOL или префикс:SYMBOL:TF
-  const parts = channel.split(':')
-  // BTC/USDT содержит '/', постепенно собираем части с индекса 1 до последней части timeframe
-  // ticker:BTC/USDT → parts[1]='BTC/USDT' ✔
-  // ohlcv:BTC/USDT:1m → parts[1]='BTC/USDT', parts[2]='1m' — символ parts[1] ✔
-  const sym = parts[1]
-  return sym && sym.includes('/') ? sym : null
-}
+import type Valkey from 'iovalkey';
+import { ConnectionManager, MAX_SUBSCRIPTIONS_PER_CLIENT } from './connection-manager.js';
+import type { Logger } from '@crypto-platform/logger';
 
 export class SubscriptionHandler {
   constructor(
-    private readonly cm: ConnectionManager,
+    private readonly connectionManager: ConnectionManager,
     private readonly valkey: Valkey,
     private readonly log: Logger
   ) {}
 
-  subscribe(clientId: string, channels: string[], symbol?: string): void {
-    for (const ch of channels) {
-      this.cm.addSubscription(clientId, ch)
+  /**
+   * Подписывает клиента на указанные каналы.
+   * Если каналы не указаны, подписка отменяется.
+   * Лимит подписок на клиента: MAX_SUBSCRIPTIONS_PER_CLIENT (50).
+   */
+  subscribe(id: string, channels: string[], symbol?: string): void {
+    if (!channels || channels.length === 0) return;
+
+    const client = this.connectionManager.get(id);
+    if (!client) {
+      this.log.warn({ clientId: id }, 'Client not found for subscribe');
+      return;
     }
-    // Отправляем один sub:request на весь список каналов сразу,
-    // а не по одному сообщению на каждый канал.
-    if (symbol) {
-      this.valkey.publish('sub:request', JSON.stringify({ viewerId: clientId, symbol, channels }))
+
+    for (const channel of channels) {
+      const currentCount = this.connectionManager.subscriptionCount(id);
+      if (currentCount >= MAX_SUBSCRIPTIONS_PER_CLIENT) {
+        this.log.warn(
+          { clientId: id, channel, currentCount },
+          'Subscription limit reached, skipping channel'
+        );
+        continue;
+      }
+
+      const added = this.connectionManager.addSubscription(id, channel);
+      if (added) {
+        this.valkey.publish(
+          'sub:request',
+          JSON.stringify({
+            clientId: id,
+            channel,
+            symbol,
+          })
+        ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:request'));
+      }
     }
-    this.log.debug({ clientId, channels, symbol }, 'subscribed')
   }
 
-  unsubscribe(clientId: string, channels: string[], symbol?: string): void {
-    for (const ch of channels) {
-      this.cm.removeSubscription(clientId, ch)
+  /**
+   * Отписывает клиента от указанных каналов.
+   */
+  unsubscribe(id: string, channels: string[], symbol?: string): void {
+    if (!channels || channels.length === 0) return;
+
+    const client = this.connectionManager.get(id);
+    if (!client) return;
+
+    for (const channel of channels) {
+      this.connectionManager.removeSubscription(id, channel);
+      this.valkey.publish(
+        'sub:release',
+        JSON.stringify({
+          clientId: id,
+          channel,
+          symbol,
+        })
+      ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:release'));
     }
-    if (symbol) {
-      this.valkey.publish('sub:release', JSON.stringify({ viewerId: clientId, symbol }))
-    }
-    this.log.debug({ clientId, channels, symbol }, 'unsubscribed')
   }
 
-  unsubscribeAll(clientId: string): void {
-    const c = this.cm.get(clientId)
-    if (!c) return
+  /**
+   * Отписывает клиента от всех каналов (при дисконнекте).
+   */
+  unsubscribeAll(id: string): void {
+    const client = this.connectionManager.get(id);
+    if (!client) return;
 
-    const symbols = new Set<string>()
-    for (const ch of c.subscriptions) {
-      // Используем фикс: извлекаем symbol через унифицированную функцию,
-      // которая не смешивает системные каналы (с неправильным symbol)
-      const sym = extractSymbol(ch)
-      if (sym) symbols.add(sym)
+    const channels = Array.from(client.subscriptions);
+    for (const channel of channels) {
+      this.connectionManager.removeSubscription(id, channel);
+      this.valkey.publish(
+        'sub:release',
+        JSON.stringify({
+          clientId: id,
+          channel,
+        })
+      ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:release'));
     }
-    for (const sym of symbols) {
-      this.valkey.publish('sub:release', JSON.stringify({ viewerId: clientId, symbol: sym }))
-    }
-    c.subscriptions.clear()
-    this.log.debug({ clientId, releasedSymbols: [...symbols] }, 'unsubscribeAll')
   }
 }
