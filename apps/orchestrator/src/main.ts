@@ -19,7 +19,10 @@ import {
 
 const env = loadEnv(
   BaseSchema.merge(ValkeySchema).merge(
-    z.object({ ORCHESTRATOR_PORT: z.coerce.number().default(3010) })
+    z.object({
+      ORCHESTRATOR_PORT: z.coerce.number().default(3010),
+      METRICS_PORT: z.coerce.number().default(3001),
+    })
   )
 );
 const log = createLogger('orchestrator');
@@ -30,7 +33,6 @@ const hbValkey = new Valkey({ host: env.VALKEY_HOST, port: env.VALKEY_PORT });
 valkey.on('error', (err: Error) => log.error({ err }, 'Valkey main connection error'));
 hbValkey.on('error', (err: Error) => log.error({ err }, 'Valkey heartbeat connection error'));
 
-// Передаём метрики в ModuleRegistry для инкремента restarts
 const registry = new ModuleRegistry(log, {
   restartsCounter: moduleRestartsCounter
 });
@@ -65,21 +67,16 @@ const monitor = new HealthMonitor(
       }
     }
 
-    // Обновление метрик
     activePairsGauge.set(activePairs);
     activeClientsGauge.set(activeClients);
 
-    // Обновление статусов и uptime модулей
     const modules = registry.all();
     for (const m of modules) {
       const statusValue =
-        m.status === 'online'
-          ? 1
-          : m.status === 'degraded'
-          ? 0.5
-          : m.status === 'restarting'
-          ? 0.25
-          : 0;
+        m.status === 'online' ? 1
+        : m.status === 'degraded' ? 0.5
+        : m.status === 'restarting' ? 0.25
+        : 0;
       moduleStatusGauge.set({ module: m.id }, statusValue);
       moduleUptimeGauge.set({ module: m.id }, m.uptimeMs / 1000);
     }
@@ -102,9 +99,8 @@ const ipWhitelist = (req: any, reply: any, done: any) => {
 let metricsServer: MetricsServer | null = null;
 
 async function start() {
-  // Запуск метрик-сервера на порту 3001
-  metricsServer = await createMetricsServer(3001);
-  log.info({ port: 3001 }, 'Metrics server started');
+  metricsServer = await createMetricsServer(env.METRICS_PORT);
+  log.info({ port: env.METRICS_PORT }, 'Metrics server started');
 
   monitor.start();
   const api = Fastify({ logger: false });
