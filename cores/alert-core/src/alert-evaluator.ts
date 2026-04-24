@@ -26,8 +26,10 @@ export class AlertEvaluator {
         rule.condition === 'cross_up'  ? prev < t && value >= t :
         rule.condition === 'cross_down'? prev > t && value <= t : false
       if (fired) {
-        rule.lastTriggered = now
+        // FIX: сначала push event, потом мутируем lastTriggered
+        // чтобы повторный вход в evaluate() в том же тике не видел обновлённый cooldown
         events.push({ ruleId:rule.id, symbol, metric, value, ts:now })
+        rule.lastTriggered = now
       }
     }
     return events

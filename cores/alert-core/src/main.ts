@@ -3,6 +3,7 @@ import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
 import Valkey from 'iovalkey';
 import type { AlertRule } from './alert-rule.js';
+import { parseAlertRule } from './alert-rule.js';
 import { AlertEvaluator } from './alert-evaluator.js';
 import { NotificationDispatcher } from './notification-dispatcher.js';
 
@@ -18,9 +19,9 @@ const VALKEY_OPTS = {
 };
 
 const sub = new Valkey(VALKEY_OPTS);
-const pub = new Valkey(VALKEY_OPTS); // для публикации alert:triggered
+const pub = new Valkey(VALKEY_OPTS);
 const hb  = new Valkey(VALKEY_OPTS);
-const db  = new Valkey(VALKEY_OPTS); // для чтения правил из Redis
+const db  = new Valkey(VALKEY_OPTS);
 
 sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error'));
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
@@ -30,9 +31,6 @@ db.on('error',  (e: Error) => log.warn({ err: e.message }, 'db connection error'
 const evaluator  = new AlertEvaluator(log);
 const dispatcher = new NotificationDispatcher(log);
 
-// FIX: правила хранятся в Redis hash `alert:rules` (field=ruleId, value=JSON)
-// Структура: HSET alert:rules <id> <JSON AlertRule>
-// Фронтенд/API записывает правила через HSET при создании/обновлении
 let rules: AlertRule[] = [];
 
 async function loadRules(): Promise<void> {
@@ -45,12 +43,13 @@ async function loadRules(): Promise<void> {
     }
     const loaded: AlertRule[] = [];
     for (const [id, raw] of Object.entries(hash)) {
-      try {
-        const rule = JSON.parse(raw) as AlertRule;
-        if (rule.enabled) loaded.push(rule);
-      } catch {
-        log.warn({ id }, 'invalid rule JSON, skipping');
+      // FIX: используем parseAlertRule с zod-валидацией вместо небезопасного JSON.parse as AlertRule
+      const rule = parseAlertRule(raw);
+      if (!rule) {
+        log.warn({ id }, 'invalid or malformed AlertRule, skipping');
+        continue;
       }
+      if (rule.enabled) loaded.push(rule);
     }
     rules = loaded;
     log.info({ count: rules.length }, 'alert rules loaded from Redis');
@@ -60,8 +59,6 @@ async function loadRules(): Promise<void> {
   }
 }
 
-// Подписываемся на обновления правил в реальном времени
-// API публикует 'alert:rules:updated' после каждого HSET/HDEL
 sub.subscribe('alert:rules:updated', (e: unknown) => { if (e) log.error(e); });
 sub.psubscribe('indicator:*', (e: unknown) => { if (e) log.error(e); });
 
@@ -81,12 +78,10 @@ sub.on('pmessage', (_pat: string, ch: string, msg: string) => {
     for (const ev of events) {
       const rule = rules.find(r => r.id === ev.ruleId)!;
       if (!rule) continue;
-      // обновляем lastTriggered в Redis
       const updated = { ...rule, lastTriggered: Date.now() };
       db.hset('alert:rules', rule.id, JSON.stringify(updated)).catch(
         (e: unknown) => log.warn(e, 'failed to update lastTriggered')
       );
-      // публикуем событие для фронтенда через ws-gateway
       pub.publish('alert:triggered', JSON.stringify(ev));
       dispatcher.dispatch(ev, rule).catch((e: unknown) => log.error(e));
     }
@@ -94,14 +89,12 @@ sub.on('pmessage', (_pat: string, ch: string, msg: string) => {
 });
 
 setInterval(() => hb.set('heartbeat:alert-core', Date.now().toString(), 'EX', 30), 5_000);
-// Перегружаем правила каждые 60с как fallback (на случай потери pub/sub)
 setInterval(() => loadRules().catch((e: unknown) => log.error(e)), 60_000);
 
 process.on('SIGTERM', () => { sub.quit(); pub.quit(); hb.quit(); db.quit(); process.exit(0); });
 process.on('SIGINT',  () => { sub.quit(); pub.quit(); hb.quit(); db.quit(); process.exit(0); });
 
 async function start(): Promise<void> {
-  // Загружаем правила ДО начала обработки сообщений
   await loadRules();
   log.info('alert-core started');
 }
