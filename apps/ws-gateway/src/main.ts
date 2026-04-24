@@ -14,7 +14,7 @@ import {
   activeClientsGauge,
   type MetricsServer,
 } from '@crypto-platform/metrics';
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 const env = loadEnv(
   BaseSchema.merge(ValkeySchema)
@@ -38,7 +38,8 @@ const fanout = new ValkeyStreams(valkeyOpts, cm, log);
 
 valkeyPub.on('error', (e: Error) => log.warn({ err: e.message }, 'valkeyPub error'));
 
-// Rate limiting
+// Rate limiting — FIX: ограничиваем размер Map чтобы не допустить OOM при IPv6 DDoS
+const MAX_RATE_ENTRIES = 10_000;
 const connectionCounts = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT = 5;
 const RATE_WINDOW = 1000;
@@ -48,10 +49,19 @@ const cleanupInterval = setInterval(() => {
   for (const [ip, entry] of connectionCounts) {
     if (entry.resetAt < now) connectionCounts.delete(ip);
   }
+  // Аварийная очистка при переполнении — удаляем самые старые записи
+  if (connectionCounts.size > MAX_RATE_ENTRIES) {
+    const toDelete = connectionCounts.size - MAX_RATE_ENTRIES;
+    let deleted = 0;
+    for (const key of connectionCounts.keys()) {
+      if (deleted >= toDelete) break;
+      connectionCounts.delete(key);
+      deleted++;
+    }
+  }
 }, 60_000);
 
 // FIX #6: uWS.getRemoteAddressAsText() возвращает ArrayBuffer, не строку
-// Без этого у всех клиентов IP = "[object ArrayBuffer]", rate limiting не работает
 function getClientIp(ws: uWS.WebSocket<unknown>): string {
   try {
     const buf = (ws as any).getRemoteAddressAsText?.();
@@ -62,6 +72,8 @@ function getClientIp(ws: uWS.WebSocket<unknown>): string {
   }
 }
 
+// FIX: используем timingSafeEqual для сравнения подписей (защита от timing attack)
+// FIX: добавлена проверка header.typ === 'JWT'
 function verifyJwt(token: string, secret: string): { sub: string } | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
@@ -72,21 +84,29 @@ function verifyJwt(token: string, secret: string): { sub: string } | null {
     const headerJson = Buffer.from(headerB64, 'base64url').toString('utf-8');
     const header = JSON.parse(headerJson);
     if (header.alg !== 'HS256') return null;
+    if (header.typ !== undefined && header.typ !== 'JWT') return null;
   } catch {
     return null;
   }
 
   const unsigned = `${headerB64}.${payloadB64}`;
-  const expectedSignature = createHmac('sha256', secret)
+  const expectedSig = createHmac('sha256', secret)
     .update(unsigned)
-    .digest('base64url');
+    .digest();
+  const providedSig = Buffer.from(signatureB64, 'base64url');
 
-  if (signatureB64 !== expectedSignature) return null;
+  if (
+    expectedSig.length !== providedSig.length ||
+    !timingSafeEqual(expectedSig, providedSig)
+  ) {
+    return null;
+  }
 
   try {
     const payloadJson = Buffer.from(payloadB64, 'base64url').toString('utf-8');
     const payload = JSON.parse(payloadJson);
     if (payload.exp && Date.now() / 1000 > payload.exp) return null;
+    if (payload.nbf && Date.now() / 1000 < payload.nbf) return null;
     if (!payload.sub || typeof payload.sub !== 'string') return null;
     return { sub: payload.sub };
   } catch {
@@ -111,7 +131,6 @@ const app = uWS.App().ws('/*', {
   },
 
   open(ws) {
-    // FIX #6: используем getClientIp() — корректно декодирует ArrayBuffer
     const ip = getClientIp(ws);
 
     if (env.JWT_SECRET) {
@@ -155,7 +174,8 @@ const app = uWS.App().ws('/*', {
     cm.add(id, ws);
     ws.send(JSON.stringify({ type: 'welcome', clientId: id }));
     wsConnectionsTotal.inc();
-    activeClientsGauge.set(cm.size());
+    // FIX: cm.count() вместо несуществующего cm.size()
+    activeClientsGauge.set(cm.count());
   },
 
   message(ws, msg, isBinary) {
@@ -163,10 +183,21 @@ const app = uWS.App().ws('/*', {
     const id = (ws as any).__id as string;
     try {
       const text = Buffer.from(msg).toString();
-      const data = JSON.parse(text);
-      subHdlr.handle(id, data).catch((e: Error) =>
-        log.warn({ id, err: e.message }, 'subscription handler error')
-      );
+      const data = JSON.parse(text) as { type?: string; channels?: string[]; symbol?: string };
+
+      // FIX: диспетчер вместо несуществующего subHdlr.handle()
+      if (!data || typeof data.type !== 'string') {
+        ws.send(JSON.stringify({ type: 'error', message: 'Missing message type' }));
+        return;
+      }
+
+      if (data.type === 'subscribe') {
+        subHdlr.subscribe(id, data.channels ?? [], data.symbol);
+      } else if (data.type === 'unsubscribe') {
+        subHdlr.unsubscribe(id, data.channels ?? [], data.symbol);
+      } else {
+        ws.send(JSON.stringify({ type: 'error', message: `Unknown type: ${data.type}` }));
+      }
     } catch {
       ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' }));
     }
@@ -175,15 +206,14 @@ const app = uWS.App().ws('/*', {
   close(ws) {
     const id = (ws as any).__id as string;
     cm.remove(id);
-    subHdlr.cleanup(id);
-    activeClientsGauge.set(cm.size());
+    // FIX: unsubscribeAll() вместо несуществующего subHdlr.cleanup()
+    subHdlr.unsubscribeAll(id);
+    // FIX: cm.count() вместо несуществующего cm.size()
+    activeClientsGauge.set(cm.count());
   },
 });
 
-// FIX #4: сначала await startMetrics(), потом app.listen
-// Было: app.listen() запускался синхронно, startMetrics() — асинхронно после
 async function start(): Promise<void> {
-  // 1. Поднимаем metrics — если упадёт, WS не стартует
   let metricsServer: MetricsServer;
   try {
     metricsServer = await createMetricsServer(env.METRICS_PORT);
@@ -193,10 +223,9 @@ async function start(): Promise<void> {
     process.exit(1);
   }
 
-  // 2. Запускаем fanout (Valkey streams reader)
-  fanout.start();
+  // FIX: fanout не имеет метода start() — polling стартует автоматически через 'ready' event
+  // Убран несуществующий вызов fanout.start()
 
-  // 3. Только после этого открываем WS-порт
   await new Promise<void>((resolve, reject) => {
     app.listen(env.WS_PORT, (token) => {
       if (token) {
@@ -211,7 +240,8 @@ async function start(): Promise<void> {
   const shutdown = async () => {
     log.info('Shutting down ws-gateway...');
     clearInterval(cleanupInterval);
-    fanout.stop();
+    // FIX: await fanout.close() вместо несуществующего fanout.stop()
+    await fanout.close();
     valkeyPub.quit();
     await metricsServer.close();
     process.exit(0);
