@@ -36,7 +36,8 @@ export class TradeProcessor {
     }
   }
 
-  private async flush(): Promise<void> {
+  // FIX: flush() теперь public — вызывается в main.ts при SIGTERM для graceful drain буфера
+  async flush(): Promise<void> {
     if (!this.buffer.length) return
     const batch = this.buffer.splice(0)
     try {

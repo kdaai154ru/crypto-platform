@@ -1,3 +1,4 @@
+// cores/worker-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
 import Valkey from 'iovalkey';
@@ -21,11 +22,25 @@ const hb     = new Valkey(VALKEY_OPTS);
 valkey.on('error', (e: Error) => log.warn({ err: e.message }, 'valkey connection error'));
 hb.on('error',     (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
-const scheduler = new Scheduler();
+// FIX: передаём log в Scheduler вместо console.error/console.log
+const scheduler = new Scheduler(log);
 const jobs = createJobs(valkey);
 for (const job of jobs) scheduler.register(job);
 
-setInterval(() => hb.set('heartbeat:worker-core', Date.now().toString(), 'EX', 30), 5_000);
+const hbInterval = setInterval(
+  () => hb.set('heartbeat:worker-core', Date.now().toString(), 'EX', 30),
+  5_000,
+);
 
-process.on('SIGTERM', () => { scheduler.destroy(); valkey.quit(); hb.quit(); process.exit(0); });
+const shutdown = () => {
+  clearInterval(hbInterval);
+  scheduler.destroy();
+  valkey.quit();
+  hb.quit();
+  process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT',  shutdown);
+
 log.info({ jobs: jobs.map(j => j.name) }, 'worker-core started');

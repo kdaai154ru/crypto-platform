@@ -84,6 +84,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    # FIX: добавлен healthcheck для prometheus — grafana depends_on him with condition
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   grafana:
     image: grafana/grafana:11.6.0
@@ -101,8 +107,10 @@ services:
     networks:
       - crypto-net
     restart: unless-stopped
+    # FIX: condition: service_healthy — grafana не стартует пока prometheus не ready
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
 
   nginx:
     image: nginx:1.27-alpine
@@ -116,8 +124,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    # FIX: реальный HTTP probe вместо `nginx -t` (проверка конфига не гарантирует что nginx слушает)
     healthcheck:
-      test: ["CMD", "nginx", "-t"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
