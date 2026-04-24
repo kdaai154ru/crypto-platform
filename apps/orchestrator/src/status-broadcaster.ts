@@ -33,18 +33,17 @@ export class StatusBroadcaster {
 
     try {
       await Promise.all([
-        // Кэшируем модули и статусы бирж (как и раньше)
         this.valkey.set('system:status:modules', JSON.stringify(modules), 'EX', 60),
         this.valkey.set('system:status:exchanges', JSON.stringify(exchanges), 'EX', 60),
-        // Добавляем в стрим system:status с MAXLEN
+        // MAXLEN идёт перед ID — правильный порядок аргументов для iovalkey
         this.valkey.xadd(
           'system:status',
-          '*',
-          'data',
-          json,
           'MAXLEN',
           '~',
-          STREAM_MAXLEN
+          String(STREAM_MAXLEN),
+          '*',
+          'data',
+          json
         ),
       ]);
     } catch (err) {
