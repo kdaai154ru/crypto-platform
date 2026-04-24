@@ -32,6 +32,10 @@ export class TradeProcessor {
     else d.sell += trade.usdValue
     if (Date.now() - d.ts >= 500) {
       this.onDelta({ symbol:trade.symbol, buyVol:d.buy, sellVol:d.sell, delta:d.buy-d.sell })
+      // FIX: reset accumulators after each emit so each 500 ms window
+      // contains only the volume traded in that window, not cumulative.
+      d.buy = 0
+      d.sell = 0
       d.ts = Date.now()
     }
   }
