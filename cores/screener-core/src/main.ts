@@ -19,7 +19,6 @@ const VALKEY_OPTS = {
 const sub    = new Valkey(VALKEY_OPTS);
 const pub    = new Valkey(VALKEY_OPTS);
 const hb     = new Valkey(VALKEY_OPTS);
-// FIX: отдельный клиент для warm-up (не смешивать с sub который в subscribe-режиме)
 const reader = new Valkey(VALKEY_OPTS);
 
 sub.on('error',    (e: Error) => log.warn({ err: e.message }, 'sub connection error'));
@@ -30,37 +29,72 @@ reader.on('error', (e: Error) => log.warn({ err: e.message }, 'reader connection
 const SCREENER_TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'];
 const engine = new ScreenerEngine({ tfs: SCREENER_TIMEFRAMES, maxPairs: 1000 });
 
-// FIX: warm-up из Valkey при старте — читаем сохранённые свечи из storage-core
-// Ключи: candle:{exchange}:{symbol}:{tf} (сохраняются storage-core)
-// Это позволяет screener сразу вычислять RSI без ожидания 14+ свечей
 async function warmUpFromValkey(): Promise<void> {
   try {
-    // Ищем все ключи свечей через SCAN (не KEYS!)
+    // FIX: accumulate ALL candles per symbol:tf first, THEN call warmUp()
+    // Previous code called warmUp(symbol, tf, [singleCandle]) in the SCAN loop,
+    // replacing the array with 1 element each iteration — RSI never had enough history.
+    const buckets = new Map<string, NormalizedCandle[]>();
+
     let cursor = '0';
-    let loaded = 0;
+    let scanned = 0;
     do {
       const [nextCursor, keys] = await reader.scan(cursor, 'MATCH', 'candle:*:*:*', 'COUNT', 200);
       cursor = nextCursor;
-      for (const key of keys) {
-        const raw = await reader.get(key);
+      scanned += keys.length;
+
+      // Pipeline GET requests for this batch
+      const pipeline = reader.pipeline();
+      for (const key of keys) pipeline.get(key);
+      const results = await pipeline.exec();
+      if (!results) continue;
+
+      for (let i = 0; i < keys.length; i++) {
+        const res = results[i];
+        if (!res || res[0]) continue; // res[0] is error
+        const raw = res[1] as string | null;
         if (!raw) continue;
         try {
           const candle = JSON.parse(raw) as NormalizedCandle;
-          if (candle.symbol && candle.tf && SCREENER_TIMEFRAMES.includes(candle.tf)) {
-            // warm-up с одной свечой — накапливаем историю по мере поступления
-            engine.warmUp(candle.symbol, candle.tf, [candle]);
-            loaded++;
+          if (
+            typeof candle.symbol === 'string' &&
+            typeof candle.tf === 'string' &&
+            SCREENER_TIMEFRAMES.includes(candle.tf)
+          ) {
+            const bucketKey = `${candle.symbol}:${candle.tf}`;
+            let bucket = buckets.get(bucketKey);
+            if (!bucket) {
+              bucket = [];
+              buckets.set(bucketKey, bucket);
+            }
+            bucket.push(candle);
           }
         } catch { /* skip malformed */ }
       }
     } while (cursor !== '0');
-    log.info({ loaded }, 'screener warm-up from Valkey complete');
+
+    // Now call warmUp() once per symbol:tf with full sorted history
+    let warmedUp = 0;
+    for (const [bucketKey, candles] of buckets) {
+      const [symbol, tf] = bucketKey.split(':') as [string, string];
+      // Sort ascending by open time so RSI calculation is deterministic
+      candles.sort((a, b) => a.ts - b.ts);
+      engine.warmUp(symbol, tf, candles);
+      warmedUp++;
+    }
+
+    log.info(
+      { scanned, buckets: buckets.size, warmedUp: warmedUp },
+      'screener warm-up from Valkey complete'
+    );
   } catch (e) {
-    log.warn({ err: e }, 'screener warm-up failed, starting cold — RSI needs 15+ candles to accumulate');
+    log.warn(
+      { err: e },
+      'screener warm-up failed, starting cold — RSI needs 15+ candles to accumulate'
+    );
   }
 }
 
-// FIX: счётчик последовательных ошибок publish для circuit breaker
 let publishErrors = 0;
 const MAX_PUBLISH_ERRORS = 5;
 let publishDisabled = false;
@@ -116,18 +150,17 @@ setInterval(
   5_000,
 );
 
-const shutdown = () => {
-  sub.quit();
-  pub.quit();
-  hb.quit();
-  reader.quit();
+const shutdown = async () => {
+  await sub.quit();
+  await pub.quit();
+  await hb.quit();
+  await reader.quit();
   process.exit(0);
 };
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT',  shutdown);
 
-// FIX: warm-up перед стартом основного цикла
 warmUpFromValkey().then(() => {
   log.info('screener-core started');
 }).catch((e) => {
