@@ -44,7 +44,7 @@ const exList: ExchangeId[] =
 
 const connectors = new Map<ExchangeId, ExchangeConnector>();
 
-// FIX #12: множество активных символов для дедупликации при stream:replay
+// Множество активных символов для дедупликации при stream:replay
 const activeSymbols = new Set<string>();
 
 function handleStreamStart(symbol: string, channels: string[]): void {
@@ -54,8 +54,6 @@ function handleStreamStart(symbol: string, channels: string[]): void {
   const needOi = chs.some((c) => c.startsWith('oi:'));
   const needFund = chs.some((c) => c.startsWith('funding:'));
 
-  // FIX #2: c.split(':')[2] вместо c.split(':') — иначе таймфрейм = массив, CCXT падает
-  // Было: .map((c) => (c.split(':') ?? '1m') as Timeframe)
   const ohlcvTfs = [
     ...new Set(
       chs
@@ -78,11 +76,11 @@ function handleStreamStart(symbol: string, channels: string[]): void {
         .watchOHLCV(symbol, tf)
         .catch((e) => log.warn({ symbol, tf, err: (e as Error).message }, 'watchOHLCV failed'));
     if (needOi)
-      (conn as any)
+      (conn as unknown as Record<string, (s: string) => Promise<void>>)
         .watchOI?.(symbol)
         ?.catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchOI failed'));
     if (needFund)
-      (conn as any)
+      (conn as unknown as Record<string, (s: string) => Promise<void>>)
         .watchFunding?.(symbol)
         ?.catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchFunding failed'));
   }
@@ -92,6 +90,8 @@ function handleStreamStart(symbol: string, channels: string[]): void {
 }
 
 let metricsServer: MetricsServer | null = null;
+// FIX #5 + trades-core #10: сохраняем ref таймера для clearInterval при shutdown
+let hbTimer: ReturnType<typeof setInterval> | null = null;
 
 async function start(): Promise<void> {
   metricsServer = await createMetricsServer(env.METRICS_PORT);
@@ -114,16 +114,19 @@ async function start(): Promise<void> {
     }
   }
 
-  // FIX #9: подписка с retry при потере Redis
-  function subscribeWithRetry(): void {
+  // FIX #5: await подписки ДО публикации exchange:ready
+  // Исключает race condition: subscription-core не может получить stream:replay
+  // до того как sub завершил подписку
+  await new Promise<void>((resolve, reject) => {
     sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e) => {
       if (e) {
-        log.error({ err: e }, 'sub.subscribe failed, retrying in 3s');
-        setTimeout(subscribeWithRetry, 3_000);
+        log.error({ err: e }, 'sub.subscribe failed');
+        reject(e);
+      } else {
+        resolve();
       }
     });
-  }
-  subscribeWithRetry();
+  });
 
   sub.on('message', (ch: string, msg: string) => {
     try {
@@ -139,7 +142,6 @@ async function start(): Promise<void> {
         const pairs = parsed.pairs ?? [];
         log.info({ count: pairs.length }, 'replaying streams after reconnect');
         for (const { symbol, channels } of pairs) {
-          // FIX #12: пропускаем символы у которых стримы ещё активны
           if (activeSymbols.has(symbol)) {
             log.debug({ symbol }, 'stream:replay skipped — symbol already active');
             continue;
@@ -162,13 +164,15 @@ async function start(): Promise<void> {
     }
   });
 
+  // Публикуем ТОЛЬКО после того как sub гарантированно подписан
   log.info('publishing exchange:ready');
   await valkey.publish(
     'exchange:ready',
     JSON.stringify({ exchanges: exList })
   );
 
-  setInterval(async () => {
+  // FIX #10: сохраняем ref — clearInterval в shutdown
+  hbTimer = setInterval(async () => {
     await hb.set('heartbeat:exchange-core', Date.now().toString(), 'EX', 30);
     const states = [...connectors.entries()].map(([id, conn]) => {
       exchangeLatencyHistogram.observe({ exchange: id, method: 'ws' }, conn.latencyMs);
@@ -186,6 +190,7 @@ async function start(): Promise<void> {
 
   const shutdown = async () => {
     log.info('Shutting down exchange-core...');
+    if (hbTimer) clearInterval(hbTimer);
     connectors.forEach((c) => c.stopAll());
     valkey.quit();
     sub.quit();
