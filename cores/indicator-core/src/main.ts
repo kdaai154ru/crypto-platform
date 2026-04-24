@@ -46,24 +46,40 @@ sub.on('message', (_: string, msg: string) => {
     const macdVal = macd(arr);
     const bbVal   = bollinger(arr);
 
+    // FIX: .catch() on all publish calls — unhandled rejection terminates process in Node 15+
     if (rsiVal != null) {
-      pub.publish(`indicator:${c.symbol}:${c.tf}:rsi`, JSON.stringify({ value: rsiVal, ts: c.ts }));
+      pub.publish(`indicator:${c.symbol}:${c.tf}:rsi`, JSON.stringify({ value: rsiVal, ts: c.ts }))
+        .catch((e: Error) => log.error({ err: e.message }, 'publish rsi failed'));
     }
     if (macdVal != null) {
-      pub.publish(`indicator:${c.symbol}:${c.tf}:macd`, JSON.stringify({ ...macdVal, ts: c.ts }));
+      pub.publish(`indicator:${c.symbol}:${c.tf}:macd`, JSON.stringify({ ...macdVal, ts: c.ts }))
+        .catch((e: Error) => log.error({ err: e.message }, 'publish macd failed'));
     }
     if (bbVal != null) {
-      pub.publish(`indicator:${c.symbol}:${c.tf}:bb`, JSON.stringify({ ...bbVal, ts: c.ts }));
+      pub.publish(`indicator:${c.symbol}:${c.tf}:bb`, JSON.stringify({ ...bbVal, ts: c.ts }))
+        .catch((e: Error) => log.error({ err: e.message }, 'publish bb failed'));
     }
   } catch (e: unknown) {
     log.error(e);
   }
 });
 
-setInterval(
+// FIX: save ref so clearInterval can run in shutdown
+const hbTimer = setInterval(
   () => hb.set('heartbeat:indicator-core', Date.now().toString(), 'EX', 30),
   5_000,
 );
 
-process.on('SIGTERM', () => { sub.quit(); pub.quit(); hb.quit(); process.exit(0); });
+// FIX: unified shutdown — clears timer + handles both SIGTERM and SIGINT
+const shutdown = () => {
+  clearInterval(hbTimer);
+  sub.quit();
+  pub.quit();
+  hb.quit();
+  process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT',  shutdown);
+
 log.info('indicator-core started');
