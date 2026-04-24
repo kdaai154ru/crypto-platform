@@ -31,6 +31,10 @@ sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub error'));
 hb.on('error', (e: Error) => log.warn({ err: e.message }, 'hb error'));
 
 const evaluator = new AlertEvaluator(log, db);
+
+// FIX: rules is declared with let so loadRules() can atomically swap the
+// reference. evaluate() always receives the current snapshot via closure.
+// No rule object is mutated — lastTriggered lives in AlertEvaluator.lastTriggered.
 let rules: AlertRule[] = [];
 
 async function loadRules(): Promise<void> {
@@ -50,7 +54,10 @@ async function loadRules(): Promise<void> {
         log.warn({ id, err: e }, 'invalid alert rule, skipping');
       }
     }
+    // FIX: atomic swap — pmessage handler picks up new array on next tick
     rules = parsed;
+    // FIX: prune lastTriggered Map for rules that no longer exist
+    evaluator.pruneLastTriggered(new Set(parsed.map(r => r.id)));
     log.info({ count: rules.length }, 'alert rules loaded');
   } catch (e) {
     log.error(e, 'loadRules failed');
@@ -66,7 +73,6 @@ async function publishAlertEvents(events: ReturnType<AlertEvaluator['evaluate']>
 }
 
 let metricsServer: MetricsServer | null = null;
-// FIX #12/#13: сохраняем референсы таймеров для clearInterval при shutdown
 let hbTimer: ReturnType<typeof setInterval> | null = null;
 let reloadTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -74,11 +80,9 @@ async function start(): Promise<void> {
   metricsServer = await createMetricsServer(env.METRICS_PORT);
   log.info({ port: env.METRICS_PORT }, 'Metrics server started');
 
-  // FIX #4: загружаем правила ДО подписки на каналы
   await loadRules();
   await evaluator.loadPrevValues();
 
-  // FIX #4: subscribe ТОЛЬКО после загрузки правил — нет race condition
   await new Promise<void>((resolve, reject) => {
     sub.subscribe('alert:rules:updated', (e) => {
       if (e) reject(e); else resolve();
@@ -98,7 +102,6 @@ async function start(): Promise<void> {
   });
 
   sub.on('pmessage', (_pattern: string, ch: string, msg: string) => {
-    // ch формат: 'indicator:symbol:metric'
     const parts = ch.split(':');
     const symbol = parts[1];
     const metric = parts[2];
@@ -112,18 +115,19 @@ async function start(): Promise<void> {
       return;
     }
     if (isNaN(value)) return;
-    const events = evaluator.evaluate(rules, metric, symbol, value);
+    // FIX: pass current snapshot of rules — loadRules() may swap the
+    // reference concurrently but evaluate() holds its own local ref
+    const snapshot = rules;
+    const events = evaluator.evaluate(snapshot, metric, symbol, value);
     if (events.length > 0) {
       publishAlertEvents(events).catch((e: unknown) => log.error(e, 'publishAlertEvents failed'));
     }
   });
 
-  // FIX #12: сохраняем ref — clearInterval в shutdown
   hbTimer = setInterval(async () => {
     await hb.set('heartbeat:alert-core', Date.now().toString(), 'EX', 30);
   }, 5_000);
 
-  // FIX #13: сохраняем ref — clearInterval в shutdown
   reloadTimer = setInterval(() => {
     loadRules().catch((e) => log.error(e, 'periodic reload rules failed'));
   }, 60_000);
@@ -132,9 +136,9 @@ async function start(): Promise<void> {
     log.info('Shutting down alert-core...');
     if (hbTimer) clearInterval(hbTimer);
     if (reloadTimer) clearInterval(reloadTimer);
-    sub.quit();
-    db.quit();
-    hb.quit();
+    await sub.quit();
+    await db.quit();
+    await hb.quit();
     if (metricsServer) await metricsServer.close();
     process.exit(0);
   };
