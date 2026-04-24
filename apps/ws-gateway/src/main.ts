@@ -19,7 +19,10 @@ import { createHmac } from 'node:crypto';
 const env = loadEnv(
   BaseSchema.merge(ValkeySchema)
     .merge(JwtSchema.partial({ JWT_SECRET: true }))
-    .merge(z.object({ WS_PORT: z.coerce.number().default(4000) }))
+    .merge(z.object({
+      WS_PORT: z.coerce.number().default(4000),
+      METRICS_PORT: z.coerce.number().default(4001),
+    }))
 );
 const log = createLogger('ws-gateway');
 
@@ -49,17 +52,13 @@ const cleanupInterval = setInterval(() => {
 
 /**
  * Проверяет JWT токен с использованием HS256.
- * @param token JWT токен
- * @param secret секретный ключ
- * @returns payload с полем sub или null при ошибке
  */
 function verifyJwt(token: string, secret: string): { sub: string } | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
-  
+
   const [headerB64, payloadB64, signatureB64] = parts;
 
-  // Проверяем алгоритм в header
   try {
     const headerJson = Buffer.from(headerB64, 'base64url').toString('utf-8');
     const header = JSON.parse(headerJson);
@@ -67,26 +66,19 @@ function verifyJwt(token: string, secret: string): { sub: string } | null {
   } catch {
     return null;
   }
-  
-  // Проверяем подпись
+
   const unsigned = `${headerB64}.${payloadB64}`;
   const expectedSignature = createHmac('sha256', secret)
     .update(unsigned)
     .digest('base64url');
-  
+
   if (signatureB64 !== expectedSignature) return null;
-  
-  // Парсим payload
+
   try {
     const payloadJson = Buffer.from(payloadB64, 'base64url').toString('utf-8');
     const payload = JSON.parse(payloadJson);
-    
-    // Проверяем срок действия
     if (payload.exp && Date.now() / 1000 > payload.exp) return null;
-    
-    // Проверяем наличие sub
     if (!payload.sub || typeof payload.sub !== 'string') return null;
-    
     return { sub: payload.sub };
   } catch {
     return null;
@@ -95,12 +87,11 @@ function verifyJwt(token: string, secret: string): { sub: string } | null {
 
 const app = uWS.App().ws('/*', {
   idleTimeout: 120,
-  
+
   upgrade(res, req, context) {
     const query = req.getQuery();
     const params = query ? new URLSearchParams(query) : null;
     const token = params?.get('token') ?? '';
-    
     res.upgrade(
       { token },
       req.getHeader('sec-websocket-key'),
@@ -109,33 +100,28 @@ const app = uWS.App().ws('/*', {
       context
     );
   },
-  
+
   open(ws) {
     const ip = (ws as any).getRemoteAddressAsText?.() || 'unknown';
-    
-    // JWT аутентификация (если секрет задан)
+
     if (env.JWT_SECRET) {
       const userData = ws.getUserData() as { token: string };
       const token = userData?.token;
-      
       if (!token) {
         log.warn({ ip }, 'Missing JWT token, closing connection');
         ws.end(1008, 'Missing authentication token');
         return;
       }
-      
       const payload = verifyJwt(token, env.JWT_SECRET);
       if (!payload) {
         log.warn({ ip }, 'Invalid JWT token, closing connection');
         ws.end(1008, 'Invalid authentication token');
         return;
       }
-      
       (ws as any).__userId = payload.sub;
       log.debug({ userId: payload.sub, ip }, 'Client authenticated');
     }
-    
-    // Rate limiting
+
     const now = Date.now();
     const entry = connectionCounts.get(ip);
     if (entry) {
@@ -160,7 +146,7 @@ const app = uWS.App().ws('/*', {
     ws.send(JSON.stringify({ type: 'welcome', clientId: id }));
     wsConnectionsTotal.inc();
   },
-  
+
   message(ws, msg) {
     try {
       const { type, channels, symbol } = JSON.parse(Buffer.from(msg).toString());
@@ -171,7 +157,7 @@ const app = uWS.App().ws('/*', {
       log.warn({ err: (e as Error).message }, 'ws message parse error');
     }
   },
-  
+
   close(ws) {
     const id = (ws as any).__id as string;
     subHdlr.unsubscribeAll(id);
@@ -205,15 +191,11 @@ const heartbeatTimer = setInterval(async () => {
 const pingTimer = setInterval(() => {
   const staleClients = cm.getStale(60_000);
   for (const client of staleClients) {
-    try {
-      client.ws.close();
-    } catch {}
+    try { client.ws.close(); } catch {}
     cm.remove(client.id);
   }
   for (const client of cm.all()) {
-    try {
-      client.ws.ping();
-    } catch {}
+    try { client.ws.ping(); } catch {}
   }
 }, 30_000);
 
@@ -229,8 +211,8 @@ const metricsTimer = setInterval(() => {
 let metricsServer: MetricsServer | null = null;
 
 async function startMetrics() {
-  metricsServer = await createMetricsServer(4001);
-  log.info({ port: 4001 }, 'Metrics server started');
+  metricsServer = await createMetricsServer(env.METRICS_PORT);
+  log.info({ port: env.METRICS_PORT }, 'Metrics server started');
 }
 
 function shutdown() {
