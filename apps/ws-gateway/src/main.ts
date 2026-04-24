@@ -16,8 +16,7 @@ import {
 } from '@crypto-platform/metrics';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-// супрессия неиспользуемого импорта
- void wsSubscriptionsTotal;
+void wsSubscriptionsTotal;
 
 const env = loadEnv(
   BaseSchema.merge(ValkeySchema)
@@ -30,7 +29,16 @@ const env = loadEnv(
 );
 const log = createLogger('ws-gateway');
 
-// Origin validation — защита от CSWSH
+// FIX: JWT_SECRET is required in production — fail fast at startup
+if (!env.JWT_SECRET && env.NODE_ENV === 'production') {
+  log.fatal('JWT_SECRET is required in production. Set it via environment variable.');
+  process.exit(1);
+}
+if (!env.JWT_SECRET) {
+  log.warn('JWT_SECRET not set - WebSocket authentication disabled (development only)');
+}
+
+// Origin validation — CSWSH protection
 const allowedOrigins: Set<string> | null = env.WS_ALLOWED_ORIGINS
   ? new Set(env.WS_ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean))
   : null;
@@ -39,11 +47,6 @@ if (!allowedOrigins) {
   log.warn('WS_ALLOWED_ORIGINS not set — Origin validation disabled (unsafe for production)');
 }
 
-if (!env.JWT_SECRET) {
-  log.warn('JWT_SECRET not set - WebSocket authentication disabled');
-}
-
-// FIX #6: retryStrategy на valkeyPub — автореконнект при потере Valkey
 const valkeyOpts = {
   host: env.VALKEY_HOST,
   port: env.VALKEY_PORT,
@@ -58,7 +61,6 @@ const fanout = new ValkeyStreams(valkeyOpts, cm, log);
 
 valkeyPub.on('error', (e: Error) => log.warn({ err: e.message }, 'valkeyPub error'));
 
-// Rate limiting — ограничиваем размер Map для защиты от OOM при IPv6 DDoS
 const MAX_RATE_ENTRIES = 10_000;
 const connectionCounts = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT = 5;
@@ -80,7 +82,6 @@ const cleanupInterval = setInterval(() => {
   }
 }, 60_000);
 
-// uWS.getRemoteAddressAsText() возвращает ArrayBuffer, не строку
 function getClientIp(ws: uWS.WebSocket<unknown>): string {
   try {
     const buf = (ws as unknown as { getRemoteAddressAsText?(): ArrayBuffer }).getRemoteAddressAsText?.();
@@ -91,18 +92,13 @@ function getClientIp(ws: uWS.WebSocket<unknown>): string {
   }
 }
 
-// FIX #8: нормализация IP — IPv4-mapped IPv6 и /64 субнет для корректного rate limiting
 function normalizeIp(raw: string): string {
   if (raw === 'unknown') return raw;
-  // IPv4-mapped IPv6: ::ffff:1.2.3.4 → 1.2.3.4
   if (raw.startsWith('::ffff:')) return raw.slice(7);
-  // IPv6: берём первые 4 группы (субнет /64)
   if (raw.includes(':')) return raw.split(':').slice(0, 4).join(':');
   return raw;
 }
 
-// FIX #7: JWT с проверкой iss — токены из другой среды/сервиса отклоняются
-// timingSafeEqual + alg + exp + nbf + iss
 function verifyJwt(token: string, secret: string, expectedIssuer: string): { sub: string } | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
@@ -134,8 +130,9 @@ function verifyJwt(token: string, secret: string, expectedIssuer: string): { sub
     const payload = JSON.parse(payloadJson) as Record<string, unknown>;
     if (typeof payload.exp === 'number' && Date.now() / 1000 > payload.exp) return null;
     if (typeof payload.nbf === 'number' && Date.now() / 1000 < payload.nbf) return null;
-    // FIX #7: проверка iss — только если поле присутствует в токене
     if (payload.iss !== undefined && payload.iss !== expectedIssuer) return null;
+    // FIX: validate aud if present — reject tokens issued for other services
+    if (payload.aud !== undefined && payload.aud !== 'ws-gateway') return null;
     if (!payload.sub || typeof payload.sub !== 'string') return null;
     return { sub: payload.sub };
   } catch {
@@ -147,7 +144,6 @@ const app = uWS.App().ws('/*', {
   idleTimeout: 120,
 
   upgrade(res, req, context) {
-    // Origin validation — защита от CSWSH
     const origin = req.getHeader('origin');
     if (allowedOrigins && origin && !allowedOrigins.has(origin)) {
       log.warn({ origin }, 'WebSocket upgrade rejected: Origin not allowed');
@@ -168,7 +164,6 @@ const app = uWS.App().ws('/*', {
   },
 
   open(ws) {
-    // FIX #8: нормализуем IP до проверки rate limit
     const ip = normalizeIp(getClientIp(ws));
 
     if (env.JWT_SECRET) {
@@ -179,7 +174,6 @@ const app = uWS.App().ws('/*', {
         ws.end(1008, 'Missing authentication token');
         return;
       }
-      // FIX #7: передаём expectedIssuer из env
       const payload = verifyJwt(token, env.JWT_SECRET, env.JWT_ISSUER ?? 'crypto-platform');
       if (!payload) {
         log.warn({ ip }, 'Invalid JWT token, closing connection');
@@ -273,7 +267,8 @@ async function start(): Promise<void> {
     log.info('Shutting down ws-gateway...');
     clearInterval(cleanupInterval);
     await fanout.close();
-    valkeyPub.quit();
+    // FIX: await quit() so Valkey buffers are flushed before process exits
+    await valkeyPub.quit();
     await metricsServer!.close();
     process.exit(0);
   };
