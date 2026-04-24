@@ -4,6 +4,9 @@ import type { Logger } from '@crypto-platform/logger'
 
 export interface DeltaResult { buyVol:number; sellVol:number; delta:number; symbol:string }
 
+// FIX: ограничение размера re-буфера — при длительном сбое ClickHouse буфер растёт без границ → OOM
+const MAX_BUFFER_SIZE = 50_000;
+
 export class TradeProcessor {
   private buffer: NormalizedTrade[] = []
   private flushTimer?: ReturnType<typeof setInterval>
@@ -36,10 +39,19 @@ export class TradeProcessor {
   private async flush(): Promise<void> {
     if (!this.buffer.length) return
     const batch = this.buffer.splice(0)
-    try { await this.onFlush(batch) }
-    catch (e) {
+    try {
+      await this.onFlush(batch)
+    } catch (e) {
       this.log.error(e, 'flush error, re-buffering')
-      this.buffer.unshift(...batch)
+      // FIX: если буфер уже переполнен — дропаем батч, чтобы не допустить OOM
+      if (this.buffer.length < MAX_BUFFER_SIZE) {
+        this.buffer.unshift(...batch)
+      } else {
+        this.log.error(
+          { dropped: batch.length, bufferSize: this.buffer.length },
+          'Buffer overflow: dropping batch to prevent OOM'
+        )
+      }
     }
   }
 
