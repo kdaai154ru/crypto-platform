@@ -9,7 +9,10 @@ export class RateLimiter {
     this.refill()
     if (this.tokens >= 1) { this.tokens--; return }
     await new Promise<void>(r => setTimeout(r, 1000 / this.rps))
-    this.tokens--
+    // FIX: refill again after sleep so elapsed time is credited,
+    // then clamp to 0 to prevent negative token counts.
+    this.refill()
+    this.tokens = Math.max(0, this.tokens - 1)
   }
   private refill() {
     const now = Date.now(), elapsed = now - this.lastRefill
