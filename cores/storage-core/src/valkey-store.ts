@@ -15,14 +15,28 @@ export const TTL = {
 
 export class ValkeyStore {
   constructor(private readonly client: Valkey) {}
-  async setTicker(symbol:string, data:object): Promise<void> {
+
+  async setTicker(symbol: string, data: object): Promise<void> {
     await this.client.set(`ticker:${symbol}`, JSON.stringify(data), 'EX', TTL.TICKER)
   }
-  async setIndicator(symbol:string, tf:string, name:string, data:object): Promise<void> {
+
+  // FIX: свечи не сохранялись вовсе — добавлен setCandle()
+  // Ключ: candle:{exchange}:{symbol}:{tf}  TTL = 60s
+  async setCandle(exchange: string, symbol: string, tf: string, data: object): Promise<void> {
+    await this.client.set(
+      `candle:${exchange}:${symbol}:${tf}`,
+      JSON.stringify(data),
+      'EX', TTL.CANDLE
+    )
+  }
+
+  async setIndicator(symbol: string, tf: string, name: string, data: object): Promise<void> {
     await this.client.set(`indicator:${symbol}:${tf}:${name}`, JSON.stringify(data), 'EX', TTL.INDICATOR)
   }
-  async setScreener(name:string, tf:string, data:object): Promise<void> {
+
+  async setScreener(name: string, tf: string, data: object): Promise<void> {
     await this.client.set(`screener:${name}:${tf}`, JSON.stringify(data), 'EX', TTL.SCREENER)
   }
-  async get(key:string): Promise<string|null> { return this.client.get(key) }
+
+  async get(key: string): Promise<string | null> { return this.client.get(key) }
 }
