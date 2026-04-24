@@ -10,8 +10,7 @@ const PREV_VALUES_KEY = 'alert:prev_values';
 const PREV_VALUES_TTL = 86_400;
 
 export class AlertEvaluator {
-  // FIX #17: in-memory кэш + персистирование в Redis
-  // при рестарте cross_up/cross_down корректно восстанавливаются
+  // in-memory кэш + персистирование в Redis
   private memCache = new Map<string, number>()
 
   constructor(
@@ -36,7 +35,16 @@ export class AlertEvaluator {
 
   evaluate(rules: AlertRule[], metric: string, symbol: string, value: number): AlertEvent[] {
     const cacheKey = `${symbol}:${metric}`;
-    const prev = this.memCache.get(cacheKey) ?? value
+
+    // FIX #9: NaN в качестве sentinel для первого значения
+    // При prev=value (старое поведение) cross_up/cross_down никогда не срабатывали
+    // если значение уже за порогом при старте — первый тик был пропущен.
+    // С NaN: !isNaN(prev) === false при первом значении — cross не срабатывает (корректно).
+    // Со второго тика: prev=реальное значение — cross срабатывает правильно.
+    const prev: number = this.memCache.has(cacheKey)
+      ? this.memCache.get(cacheKey)!
+      : NaN
+
     this.memCache.set(cacheKey, value)
     // Персистируем асинхронно — не блокируем evaluate()
     this.db.hset(PREV_VALUES_KEY, cacheKey, String(value))
@@ -50,12 +58,13 @@ export class AlertEvaluator {
       if (rule.lastTriggered && now - rule.lastTriggered < rule.cooldownMs) continue
       const t = rule.threshold
       const fired =
-        rule.condition === 'gt'        ? value > t :
-        rule.condition === 'lt'        ? value < t :
-        rule.condition === 'gte'       ? value >= t :
-        rule.condition === 'lte'       ? value <= t :
-        rule.condition === 'cross_up'  ? prev < t && value >= t :
-        rule.condition === 'cross_down'? prev > t && value <= t : false
+        rule.condition === 'gt'         ? value > t :
+        rule.condition === 'lt'         ? value < t :
+        rule.condition === 'gte'        ? value >= t :
+        rule.condition === 'lte'        ? value <= t :
+        // FIX #9: !isNaN(prev) — без предыдущего реального значения cross не срабатывает
+        rule.condition === 'cross_up'   ? !isNaN(prev) && prev < t && value >= t :
+        rule.condition === 'cross_down' ? !isNaN(prev) && prev > t && value <= t : false
       if (fired) {
         events.push({ ruleId:rule.id, symbol, metric, value, ts:now })
         rule.lastTriggered = now
