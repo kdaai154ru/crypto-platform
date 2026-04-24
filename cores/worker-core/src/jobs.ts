@@ -1,5 +1,6 @@
 // cores/worker-core/src/jobs.ts
 import type Valkey from 'iovalkey';
+import type { Logger } from '@crypto-platform/logger';
 import type { Job } from './scheduler.js';
 
 // FIX #3: вспомогательная функция SCAN вместо KEYS
@@ -15,7 +16,9 @@ async function scanKeys(valkey: Valkey, pattern: string): Promise<string[]> {
   return result;
 }
 
-export function createJobs(valkey: Valkey): Job[] {
+// FIX: accept Logger as second param so stale-key-cleanup emits structured pino events
+// instead of console.log (which bypasses pino transport in production)
+export function createJobs(valkey: Valkey, log: Logger): Job[] {
   return [
     {
       name: 'screener-refresh',
@@ -42,7 +45,6 @@ export function createJobs(valkey: Valkey): Job[] {
       name: 'stale-key-cleanup',
       intervalMs: 10 * 60 * 1000,
       run: async () => {
-        // FIX #3: SCAN вместо KEYS — не блокирует Redis
         const keys = await scanKeys(valkey, 'heartbeat:*');
         let removed = 0;
         for (const key of keys) {
@@ -52,8 +54,11 @@ export function createJobs(valkey: Valkey): Job[] {
             removed++;
           }
         }
+        // FIX: use pino logger instead of console.log
         if (removed > 0) {
-          console.log(`[stale-cleanup] removed ${removed} stale keys`);
+          log.info({ removed }, 'stale-key-cleanup: removed stale heartbeat keys');
+        } else {
+          log.debug('stale-key-cleanup: no stale keys found');
         }
       },
     },
@@ -68,7 +73,6 @@ export function createJobs(valkey: Valkey): Job[] {
       name: 'system-health-snapshot',
       intervalMs: 15_000,
       run: async () => {
-        // FIX #3: SCAN вместо KEYS
         const modules = await scanKeys(valkey, 'heartbeat:*');
         const snapshot = {
           ts: Date.now(),
