@@ -1,3 +1,4 @@
+// cores/screener-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
 import Valkey from 'iovalkey';
@@ -24,8 +25,12 @@ pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
 const SCREENER_TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'];
-
 const engine = new ScreenerEngine({ tfs: SCREENER_TIMEFRAMES, maxPairs: 1000 });
+
+// FIX: счётчик последовательных ошибок publish для circuit breaker
+let publishErrors = 0;
+const MAX_PUBLISH_ERRORS = 5;
+let publishDisabled = false;
 
 sub.subscribe('agg:candle', (e: unknown) => {
   if (e) log.error(e);
@@ -41,12 +46,39 @@ sub.on('message', (_: string, msg: string) => {
   }
 });
 
-setInterval(() => {
-  const rows = engine.getRows('rsi');
-  if (rows.length) {
-    pub.publish('screener:update', JSON.stringify(rows));
+setInterval(async () => {
+  // FIX: guard — не пытаемся публиковать если pub недоступен
+  if (publishDisabled) {
+    log.warn('screener publish disabled due to repeated errors, skipping');
+    return;
   }
-  log.debug({ rows: rows.length }, 'screener refresh');
+
+  const rows = engine.getRows('rsi');
+  if (!rows.length) return;
+
+  try {
+    await pub.publish('screener:update', JSON.stringify(rows));
+    // сброс счётчика при успехе
+    if (publishErrors > 0) {
+      publishErrors = 0;
+      publishDisabled = false;
+      log.info('screener publish recovered');
+    }
+    log.debug({ rows: rows.length }, 'screener refresh');
+  } catch (e: unknown) {
+    publishErrors++;
+    log.error({ err: e, attempt: publishErrors }, 'screener publish failed');
+    if (publishErrors >= MAX_PUBLISH_ERRORS) {
+      // FIX: отключаем публикацию на 60с вместо бесконечного флуда ошибками
+      publishDisabled = true;
+      log.error('screener publish circuit breaker OPEN — pausing 60s');
+      setTimeout(() => {
+        publishDisabled = false;
+        publishErrors = 0;
+        log.info('screener publish circuit breaker CLOSED — retrying');
+      }, 60_000);
+    }
+  }
 }, 30_000);
 
 setInterval(
@@ -55,4 +87,5 @@ setInterval(
 );
 
 process.on('SIGTERM', () => { sub.quit(); pub.quit(); hb.quit(); process.exit(0); });
+process.on('SIGINT',  () => { sub.quit(); pub.quit(); hb.quit(); process.exit(0); });
 log.info('screener-core started');
