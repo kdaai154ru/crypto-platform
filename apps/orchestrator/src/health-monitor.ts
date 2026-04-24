@@ -16,7 +16,7 @@ export class HealthMonitor {
   constructor(
     private readonly registry: ModuleRegistry,
     private readonly valkey: Valkey,
-    private readonly onStatusChange: () => void,
+    private readonly onStatusChange: () => Promise<void>,
     private readonly log: Logger
   ) {}
 
@@ -30,6 +30,8 @@ export class HealthMonitor {
       this.isTicking = true
       try {
         const ids = [...this.registry.all().map(m => m.id)]
+
+        // Шаг 1: обновляем heartbeats
         for (const id of ids) {
           try {
             const val = await this.valkey.get(`heartbeat:${id}`)
@@ -38,7 +40,6 @@ export class HealthMonitor {
               try {
                 payload = JSON.parse(val)
               } catch {
-                // если не JSON, считаем что это просто ts
                 payload = { ts: parseInt(val, 10) || Date.now() }
               }
               this.registry.heartbeat(id, payload.error)
@@ -47,17 +48,30 @@ export class HealthMonitor {
             this.log.error({ id, err }, 'Failed to process heartbeat for module')
           }
         }
+
+        // Шаг 2: tick (пересчёт статусов по таймаутам)
         this.registry.tick()
 
-        for (const m of this.registry.all()) {
-          const prev = this.prevStatus.get(m.id)
-          if (m.status === 'online' && prev !== 'online') {
-            await this.valkey.publish('module:online', JSON.stringify({ id: m.id }))
+        // Шаг 3: публикуем события смены статуса
+        try {
+          for (const m of this.registry.all()) {
+            const prev = this.prevStatus.get(m.id)
+            if (m.status === 'online' && prev !== 'online') {
+              await this.valkey.publish('module:online', JSON.stringify({ id: m.id }))
+            }
+            this.prevStatus.set(m.id, m.status)
           }
-          this.prevStatus.set(m.id, m.status)
+        } catch (err) {
+          this.log.error({ err }, 'HealthMonitor step 3 failed: publish module:online')
         }
 
-        await this.onStatusChange()
+        // FIX #5: onStatusChange в отдельном try/catch с меткой шага
+        // Раньше ошибки подавлялись внешним catch без контекста
+        try {
+          await this.onStatusChange()
+        } catch (err) {
+          this.log.error({ err }, 'HealthMonitor step 4 failed: onStatusChange (broadcast)')
+        }
       } catch (err) {
         this.log.error({ err }, 'HealthMonitor tick failed')
       } finally {

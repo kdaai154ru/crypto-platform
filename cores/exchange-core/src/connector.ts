@@ -40,8 +40,11 @@ export class ExchangeConnector {
   private stoppingStreams = new Set<string>()
   private latencySamples: number[] = []
   private consecutiveErrors = new Map<string, number>()
+  // FIX #3: флаг предотвращает повторные итерации while пока идёт реконнект
+  private isReconnecting = false
   public latencyMs = 0
   public lastMessageAt = 0
+  // FIX #7: реальные реконнекты, а не счётчик ошибок
   public restarts = 0
 
   constructor(
@@ -95,6 +98,20 @@ export class ExchangeConnector {
     this.consecutiveErrors.delete(streamKey)
   }
 
+  // FIX #3 + #7: единый метод реконнекта
+  // - isReconnecting блокирует while-петлю пока connect() не завершится
+  // - restarts инкрементируется один раз на один реальный реконнект
+  private async reconnect(): Promise<void> {
+    if (this.isReconnecting) return
+    this.isReconnecting = true
+    try {
+      await this.rm.schedule(() => this.connect())
+      this.restarts++ // FIX #7: один инкремент на один реальный реконнект
+    } finally {
+      this.isReconnecting = false
+    }
+  }
+
   async watchTrades(symbol: string): Promise<void> {
     const key = `trades:${symbol}`
     if (this.activeStreams.size >= MAX_STREAMS) {
@@ -104,6 +121,11 @@ export class ExchangeConnector {
     if (this.activeStreams.has(key) || this.stoppingStreams.has(key)) return
     this.activeStreams.add(key)
     while (this.activeStreams.has(key) && !this.stoppingStreams.has(key)) {
+      // FIX #3: ждём завершения реконнекта перед следующей итерацией
+      if (this.isReconnecting) {
+        await new Promise<void>(resolve => setTimeout(resolve, 500))
+        continue
+      }
       const start = Date.now()
       try {
         const trades = (await this.cb.execute(() =>
@@ -120,8 +142,7 @@ export class ExchangeConnector {
       } catch (e) {
         this.logger.error({ symbol, err: e }, 'watchTrades error')
         this.handleStreamError(key, e)
-        this.restarts++
-        await this.rm.schedule(() => this.connect())
+        await this.reconnect() // FIX #3: блокирует цикл до завершения реконнекта
       }
     }
     this.activeStreams.delete(key)
@@ -137,6 +158,10 @@ export class ExchangeConnector {
     if (this.activeStreams.has(key) || this.stoppingStreams.has(key)) return
     this.activeStreams.add(key)
     while (this.activeStreams.has(key) && !this.stoppingStreams.has(key)) {
+      if (this.isReconnecting) {
+        await new Promise<void>(resolve => setTimeout(resolve, 500))
+        continue
+      }
       const start = Date.now()
       try {
         const ticker = await this.cb.execute(() => this.ex.watchTicker(symbol))
@@ -151,8 +176,7 @@ export class ExchangeConnector {
       } catch (e) {
         this.logger.error({ symbol, err: e }, 'watchTicker error')
         this.handleStreamError(key, e)
-        this.restarts++
-        await this.rm.schedule(() => this.connect())
+        await this.reconnect()
       }
     }
     this.activeStreams.delete(key)
@@ -168,6 +192,10 @@ export class ExchangeConnector {
     if (this.activeStreams.has(key) || this.stoppingStreams.has(key)) return
     this.activeStreams.add(key)
     while (this.activeStreams.has(key) && !this.stoppingStreams.has(key)) {
+      if (this.isReconnecting) {
+        await new Promise<void>(resolve => setTimeout(resolve, 500))
+        continue
+      }
       const start = Date.now()
       try {
         const candles = (await this.cb.execute(() =>
@@ -184,8 +212,7 @@ export class ExchangeConnector {
       } catch (e) {
         this.logger.error({ symbol, tf, err: e }, 'watchOHLCV error')
         this.handleStreamError(key, e)
-        this.restarts++
-        await this.rm.schedule(() => this.connect())
+        await this.reconnect()
       }
     }
     this.activeStreams.delete(key)

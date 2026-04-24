@@ -29,10 +29,6 @@ export interface ModuleRegistryMetrics {
   };
 }
 
-/**
- * Реестр состояний модулей платформы.
- * Отвечает за хранение, обновление и расчет статусов модулей на основе heartbeat'ов.
- */
 export class ModuleRegistry {
   private states = new Map<string, ModuleState>();
   private metrics: ModuleRegistryMetrics;
@@ -54,12 +50,6 @@ export class ModuleRegistry {
     }
   }
 
-  /**
-   * Обновляет heartbeat модуля.
-   * Если модуль был offline/restarting и переходит в online, увеличивает счетчик restarts.
-   * @param id Идентификатор модуля
-   * @param error Опциональное сообщение об ошибке (переводит статус в degraded)
-   */
   heartbeat(id: string, error?: string): void {
     const s = this.states.get(id);
     if (!s) return;
@@ -72,35 +62,34 @@ export class ModuleRegistry {
     if (wasOffline && newStatus === 'online') {
       s.restarts++;
       s.startedAt = now;
-      // Инкремент метрики restarts
       if (this.metrics.restartsCounter) {
         this.metrics.restartsCounter.inc({ module: id });
       }
     } else if (s.startedAt === 0 && newStatus === 'online') {
-      // первый запуск — restarts не увеличиваем
       s.startedAt = now;
     }
 
     s.status = newStatus;
   }
 
-  /**
-   * Выполняет периодическую проверку таймаутов и пересчитывает статусы.
-   * @returns Массив текущих состояний всех модулей
-   */
   tick(): ModuleState[] {
     const now = Date.now();
-    for (const [id, s] of this.states) {
+    for (const [, s] of this.states) {
       if (s.status === 'online' || s.status === 'degraded') {
         const gap = now - s.lastHeartbeat;
+
         if (gap > OFFLINE_TIMEOUT) {
           s.status = 'offline';
         } else if (gap > RESTART_TIMEOUT) {
           s.status = 'restarting';
         } else if (gap > HEARTBEAT_TIMEOUT) {
-          s.status = 'degraded';
+          // FIX #8: деградируем только если модуль был online
+          // Если heartbeat уже выставил degraded (из-за error в payload) — не перезаписываем
+          if (s.status === 'online') {
+            s.status = 'degraded';
+          }
         }
-        // пересчет uptime только если модуль online и есть startedAt
+
         if (s.status === 'online' && s.startedAt > 0) {
           s.uptimeMs = now - s.startedAt;
         }
@@ -109,24 +98,14 @@ export class ModuleRegistry {
     return [...this.states.values()];
   }
 
-  /**
-   * Возвращает все текущие состояния модулей.
-   */
   all(): ModuleState[] {
     return [...this.states.values()];
   }
 
-  /**
-   * Возвращает состояние конкретного модуля по ID.
-   */
   get(id: string): ModuleState | undefined {
     return this.states.get(id);
   }
 
-  /**
-   * Сбрасывает состояние модуля к начальному (offline).
-   * Используется для ручного вмешательства или тестирования.
-   */
   reset(id: string): void {
     const s = this.states.get(id);
     if (s) {
@@ -135,13 +114,9 @@ export class ModuleRegistry {
       s.error = undefined;
       s.startedAt = 0;
       s.uptimeMs = 0;
-      // restarts не сбрасываем, это счетчик перезапусков
     }
   }
 
-  /**
-   * Возвращает массив ID модулей, которые сейчас offline или restarting.
-   */
   getOffline(): string[] {
     const result: string[] = [];
     for (const [id, s] of this.states) {

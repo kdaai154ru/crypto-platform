@@ -33,9 +33,10 @@ export class StatusBroadcaster {
 
     try {
       await Promise.all([
-        this.valkey.set('system:status:modules', JSON.stringify(modules), 'EX', 60),
+        // FIX #1: сохраняем только publicModules, а не полный ModuleState
+        // Было: JSON.stringify(modules) — утекали error/restarts/uptimeMs
+        this.valkey.set('system:status:modules', JSON.stringify(publicModules), 'EX', 60),
         this.valkey.set('system:status:exchanges', JSON.stringify(exchanges), 'EX', 60),
-        // MAXLEN идёт перед ID — правильный порядок аргументов для iovalkey
         this.valkey.xadd(
           'system:status',
           'MAXLEN',

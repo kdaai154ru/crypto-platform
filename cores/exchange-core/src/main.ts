@@ -44,17 +44,23 @@ const exList: ExchangeId[] =
 
 const connectors = new Map<ExchangeId, ExchangeConnector>();
 
+// FIX #12: множество активных символов для дедупликации при stream:replay
+const activeSymbols = new Set<string>();
+
 function handleStreamStart(symbol: string, channels: string[]): void {
   const chs: string[] = channels ?? [];
   const needTicker = chs.length === 0 || chs.some((c) => c.startsWith('ticker:'));
   const needTrades = chs.length === 0 || chs.some((c) => c.startsWith('trades:'));
   const needOi = chs.some((c) => c.startsWith('oi:'));
   const needFund = chs.some((c) => c.startsWith('funding:'));
+
+  // FIX #2: c.split(':')[2] вместо c.split(':') — иначе таймфрейм = массив, CCXT падает
+  // Было: .map((c) => (c.split(':') ?? '1m') as Timeframe)
   const ohlcvTfs = [
     ...new Set(
       chs
         .filter((c) => c.startsWith('ohlcv:'))
-        .map((c) => (c.split(':') ?? '1m') as Timeframe)
+        .map((c) => (c.split(':')[2] ?? '1m') as Timeframe)
     ),
   ];
 
@@ -80,13 +86,14 @@ function handleStreamStart(symbol: string, channels: string[]): void {
         .watchFunding?.(symbol)
         ?.catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchFunding failed'));
   }
+
+  activeSymbols.add(symbol);
   log.info({ symbol, chs }, 'streams started');
 }
 
 let metricsServer: MetricsServer | null = null;
 
 async function start(): Promise<void> {
-  // Запуск сервера метрик
   metricsServer = await createMetricsServer(env.METRICS_PORT);
   log.info({ port: env.METRICS_PORT }, 'Metrics server started');
 
@@ -107,9 +114,16 @@ async function start(): Promise<void> {
     }
   }
 
-  sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e) => {
-    if (e) log.error(e);
-  });
+  // FIX #9: подписка с retry при потере Redis
+  function subscribeWithRetry(): void {
+    sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e) => {
+      if (e) {
+        log.error({ err: e }, 'sub.subscribe failed, retrying in 3s');
+        setTimeout(subscribeWithRetry, 3_000);
+      }
+    });
+  }
+  subscribeWithRetry();
 
   sub.on('message', (ch: string, msg: string) => {
     try {
@@ -125,6 +139,11 @@ async function start(): Promise<void> {
         const pairs = parsed.pairs ?? [];
         log.info({ count: pairs.length }, 'replaying streams after reconnect');
         for (const { symbol, channels } of pairs) {
+          // FIX #12: пропускаем символы у которых стримы ещё активны
+          if (activeSymbols.has(symbol)) {
+            log.debug({ symbol }, 'stream:replay skipped — symbol already active');
+            continue;
+          }
           handleStreamStart(symbol, channels);
         }
       } else if (ch === 'stream:stop') {
@@ -135,6 +154,7 @@ async function start(): Promise<void> {
         for (const [, conn] of connectors) {
           conn.stopSymbol(parsed.symbol);
         }
+        activeSymbols.delete(parsed.symbol);
         log.info({ symbol: parsed.symbol }, 'streams stopped');
       }
     } catch (e) {
@@ -151,9 +171,7 @@ async function start(): Promise<void> {
   setInterval(async () => {
     await hb.set('heartbeat:exchange-core', Date.now().toString(), 'EX', 30);
     const states = [...connectors.entries()].map(([id, conn]) => {
-      // Обновление метрики latency для каждой биржи
       exchangeLatencyHistogram.observe({ exchange: id, method: 'ws' }, conn.latencyMs);
-      
       return {
         id,
         status: 'online',
@@ -181,7 +199,7 @@ async function start(): Promise<void> {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  log.info({ exchanges: exList.length }, 'exchange-core started');
+  log.info({ exchanges: exList }, 'exchange-core started');
 }
 
 start().catch((e) => {

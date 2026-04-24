@@ -50,9 +50,18 @@ const cleanupInterval = setInterval(() => {
   }
 }, 60_000);
 
-/**
- * Проверяет JWT токен с использованием HS256.
- */
+// FIX #6: uWS.getRemoteAddressAsText() возвращает ArrayBuffer, не строку
+// Без этого у всех клиентов IP = "[object ArrayBuffer]", rate limiting не работает
+function getClientIp(ws: uWS.WebSocket<unknown>): string {
+  try {
+    const buf = (ws as any).getRemoteAddressAsText?.();
+    if (!buf) return 'unknown';
+    return Buffer.from(buf as ArrayBuffer).toString();
+  } catch {
+    return 'unknown';
+  }
+}
+
 function verifyJwt(token: string, secret: string): { sub: string } | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
@@ -102,7 +111,8 @@ const app = uWS.App().ws('/*', {
   },
 
   open(ws) {
-    const ip = (ws as any).getRemoteAddressAsText?.() || 'unknown';
+    // FIX #6: используем getClientIp() — корректно декодирует ArrayBuffer
+    const ip = getClientIp(ws);
 
     if (env.JWT_SECRET) {
       const userData = ws.getUserData() as { token: string };
@@ -145,95 +155,73 @@ const app = uWS.App().ws('/*', {
     cm.add(id, ws);
     ws.send(JSON.stringify({ type: 'welcome', clientId: id }));
     wsConnectionsTotal.inc();
+    activeClientsGauge.set(cm.size());
   },
 
-  message(ws, msg) {
+  message(ws, msg, isBinary) {
+    if (isBinary) return;
+    const id = (ws as any).__id as string;
     try {
-      const { type, channels, symbol } = JSON.parse(Buffer.from(msg).toString());
-      const id = (ws as any).__id as string;
-      if (type === 'subscribe') subHdlr.subscribe(id, channels, symbol);
-      else if (type === 'unsubscribe') subHdlr.unsubscribe(id, channels, symbol);
-    } catch (e) {
-      log.warn({ err: (e as Error).message }, 'ws message parse error');
+      const text = Buffer.from(msg).toString();
+      const data = JSON.parse(text);
+      subHdlr.handle(id, data).catch((e: Error) =>
+        log.warn({ id, err: e.message }, 'subscription handler error')
+      );
+    } catch {
+      ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' }));
     }
   },
 
   close(ws) {
     const id = (ws as any).__id as string;
-    subHdlr.unsubscribeAll(id);
     cm.remove(id);
-    wsConnectionsTotal.dec();
+    subHdlr.cleanup(id);
+    activeClientsGauge.set(cm.size());
   },
 });
 
-app.listen(env.WS_PORT, (tok: any) => {
-  if (tok) log.info({ port: env.WS_PORT }, 'ws-gateway started');
-  else {
-    log.fatal('ws-gateway failed to start');
+// FIX #4: сначала await startMetrics(), потом app.listen
+// Было: app.listen() запускался синхронно, startMetrics() — асинхронно после
+async function start(): Promise<void> {
+  // 1. Поднимаем metrics — если упадёт, WS не стартует
+  let metricsServer: MetricsServer;
+  try {
+    metricsServer = await createMetricsServer(env.METRICS_PORT);
+    log.info({ port: env.METRICS_PORT }, 'Metrics server started');
+  } catch (e) {
+    log.fatal({ err: e }, 'Failed to start metrics server, aborting');
     process.exit(1);
   }
-});
 
-const hb = new Valkey(valkeyOpts);
-hb.on('error', (e: Error) => log.warn({ err: e.message }, 'hb error'));
+  // 2. Запускаем fanout (Valkey streams reader)
+  fanout.start();
 
-const heartbeatTimer = setInterval(async () => {
-  try {
-    await Promise.all([
-      hb.set('heartbeat:ws-gateway', Date.now().toString(), 'EX', 30),
-      hb.set('stat:active_clients', cm.count().toString(), 'EX', 30),
-    ]);
-  } catch (err) {
-    log.error({ err }, 'Heartbeat update failed');
-  }
-}, 5_000);
+  // 3. Только после этого открываем WS-порт
+  await new Promise<void>((resolve, reject) => {
+    app.listen(env.WS_PORT, (token) => {
+      if (token) {
+        log.info({ port: env.WS_PORT }, 'ws-gateway started');
+        resolve();
+      } else {
+        reject(new Error(`Failed to listen on port ${env.WS_PORT}`));
+      }
+    });
+  });
 
-const pingTimer = setInterval(() => {
-  const staleClients = cm.getStale(60_000);
-  for (const client of staleClients) {
-    try { client.ws.close(); } catch {}
-    cm.remove(client.id);
-  }
-  for (const client of cm.all()) {
-    try { client.ws.ping(); } catch {}
-  }
-}, 30_000);
+  const shutdown = async () => {
+    log.info('Shutting down ws-gateway...');
+    clearInterval(cleanupInterval);
+    fanout.stop();
+    valkeyPub.quit();
+    await metricsServer.close();
+    process.exit(0);
+  };
 
-const metricsTimer = setInterval(() => {
-  const clients = cm.all();
-  let totalSubscriptions = 0;
-  for (const c of clients) totalSubscriptions += c.subscriptions.size;
-  wsSubscriptionsTotal.set(totalSubscriptions);
-  activeClientsGauge.set(clients.length);
-  wsConnectionsTotal.set(clients.length);
-}, 5_000);
-
-let metricsServer: MetricsServer | null = null;
-
-async function startMetrics() {
-  metricsServer = await createMetricsServer(env.METRICS_PORT);
-  log.info({ port: env.METRICS_PORT }, 'Metrics server started');
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
-function shutdown() {
-  log.info('Shutting down ws-gateway...');
-  clearInterval(heartbeatTimer);
-  clearInterval(pingTimer);
-  clearInterval(cleanupInterval);
-  clearInterval(metricsTimer);
-  fanout.close();
-  valkeyPub.quit();
-  hb.quit();
-  if (metricsServer) {
-    metricsServer.close().catch((err) => log.error({ err }, 'Error closing metrics server'));
-  }
-  process.exit(0);
-}
-
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
-
-startMetrics().catch((e) => {
+start().catch((e) => {
   log.fatal(e);
   process.exit(1);
 });
