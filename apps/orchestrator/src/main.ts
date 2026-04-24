@@ -86,16 +86,43 @@ const monitor = new HealthMonitor(
   log
 );
 
-// FIX #22: расширен IP whitelist — добавлены 172.16-172.31 (Docker default bridge)
-// и 192.168.x.x (Docker custom networks / host LAN)
+/**
+ * FIX(audit): расширен IP whitelist:
+ *  - ::ffff:127.x.x.x  — IPv4-mapped loopback (Docker/Node иногда возвращает этот формат)
+ *  - fe80:              — IPv6 link-local
+ *  - fc/fd              — IPv6 unique-local (RFC 4193)
+ *  - 172.16-31.x.x     — Docker default bridge
+ *  - 192.168.x.x       — Docker custom networks / host LAN
+ */
 function isPrivateIp(ip: string): boolean {
   if (!ip) return false;
-  if (ip === '127.0.0.1' || ip === '::1') return true;
+
+  // IPv4 loopback
+  if (ip === '127.0.0.1') return true;
+
+  // IPv6 loopback
+  if (ip === '::1') return true;
+
+  // IPv4-mapped loopback (::ffff:127.x.x.x)
+  if (ip.startsWith('::ffff:127.')) return true;
+
+  // IPv6 link-local (fe80::/10)
+  if (ip.toLowerCase().startsWith('fe80:')) return true;
+
+  // IPv6 unique-local (fc00::/7 — covers fc and fd prefixes)
+  const lower = ip.toLowerCase();
+  if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
+
+  // 10.x.x.x
   if (ip.startsWith('10.')) return true;
+
   // 172.16.0.0/12 → 172.16.x.x – 172.31.x.x
   const m = ip.match(/^172\.(\d+)\./);
   if (m && parseInt(m[1]!, 10) >= 16 && parseInt(m[1]!, 10) <= 31) return true;
+
+  // 192.168.x.x
   if (ip.startsWith('192.168.')) return true;
+
   return false;
 }
 

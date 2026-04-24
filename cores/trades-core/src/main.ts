@@ -37,6 +37,16 @@ sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
+// FIX(audit): resubscribe после reconnect Valkey.
+// iovalkey при reconnect переходит в состояние 'ready' заново,
+// но pub/sub подписки НЕ восстанавливаются автоматически — нужен явный re-subscribe.
+sub.on('ready', () => {
+  log.info('Valkey sub ready, subscribing to norm:* channels');
+  sub.subscribe('norm:trades', 'norm:ticker', 'norm:candle', (err: Error | null) => {
+    if (err) log.error({ err }, 'Failed to subscribe to norm:* channels');
+  });
+});
+
 const chWriter = new ClickHouseTradesWriter(
   log,
   env.CLICKHOUSE_HOST,
@@ -50,66 +60,62 @@ const processor = new TradeProcessor(
   async (batch) => {
     try {
       await chWriter.writeBatch(batch);
-    } catch (err) {
-      log.error({ err, count: batch.length }, 'ClickHouse writeBatch failed');
-      messagesFailedCounter.inc({ core: 'trades-core', channel: 'clickhouse' });
+      messagesProcessedCounter.inc({ service: 'trades-core' }, batch.length);
+    } catch (e) {
+      messagesFailedCounter.inc({ service: 'trades-core' }, batch.length);
+      log.error({ err: e, count: batch.length }, 'ClickHouse write failed');
+      throw e; // re-throw so TradeProcessor re-buffers
     }
   },
-  (delta) => pub.publish('trades:delta', JSON.stringify(delta))
+  (delta) => {
+    // publish CVD delta to ws-gateway via pub/sub
+    pub.publish('trades:delta', JSON.stringify(delta)).catch((e: Error) =>
+      log.warn({ err: e.message }, 'Failed to publish delta')
+    );
+  }
 );
 
-let metricsServer: MetricsServer | null = null;
-// FIX #11: сохраняем ref — clearInterval в shutdown, чтобы не пытаться писать в закрытый hb
-let hbTimer: ReturnType<typeof setInterval> | null = null;
+sub.on('message', (channel: string, message: string) => {
+  if (channel !== 'norm:trades') return;
+  try {
+    const trade = JSON.parse(message) as NormalizedTrade;
+    processor.process(trade);
+    const lag = Date.now() - trade.ts;
+    pipelineLagGauge.set({ stage: 'trades-core' }, lag);
+  } catch (e) {
+    log.error({ err: e, message }, 'Failed to process trade message');
+    messagesFailedCounter.inc({ service: 'trades-core' });
+  }
+});
 
-async function start() {
+let hbTimer: ReturnType<typeof setInterval> | null = null;
+let metricsServer: MetricsServer | null = null;
+
+async function start(): Promise<void> {
   metricsServer = await createMetricsServer(env.METRICS_PORT);
   log.info({ port: env.METRICS_PORT }, 'Metrics server started');
 
-  sub.subscribe('norm:trades', (e: unknown) => {
-    if (e) log.error(e);
-  });
-
-  sub.on('message', (_ch: string, msg: string) => {
-    try {
-      const trade = JSON.parse(msg) as NormalizedTrade;
-      messagesProcessedCounter.inc({ core: 'trades-core', channel: 'norm:trades' });
-
-      if (trade.ts) {
-        const lag = Date.now() - trade.ts;
-        pipelineLagGauge.set({ core: 'trades-core' }, lag);
-      }
-
-      processor.process(trade);
-    } catch (e) {
-      log.error(e);
-      messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades' });
-    }
-  });
-
-  const shutdown = async () => {
-    log.info('Shutting down trades-core...');
-    // FIX #11: останавливаем таймер ДО hb.quit() — нет попыток писать в hb после quit
-    if (hbTimer) clearInterval(hbTimer);
-    // FIX #3 (trade-buffer): processor.flush() дреинит буфер в ClickHouse
-    await processor.flush();
-    sub.quit();
-    pub.quit();
-    hb.quit();
-    if (metricsServer) await metricsServer.close();
-    process.exit(0);
-  };
-
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
-
   hbTimer = setInterval(
     () => hb.set('heartbeat:trades-core', Date.now().toString(), 'EX', 30),
-    5_000,
+    5_000
   );
 
   log.info('trades-core started');
 }
+
+async function shutdown(): Promise<void> {
+  log.info('Shutting down trades-core...');
+  if (hbTimer) clearInterval(hbTimer);
+  // Flush remaining buffer to ClickHouse before exit
+  await processor.flush();
+  processor.destroy();
+  await Promise.allSettled([sub.quit(), pub.quit(), hb.quit()]);
+  if (metricsServer) await metricsServer.close();
+  process.exit(0);
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 start().catch((e) => {
   log.fatal(e);

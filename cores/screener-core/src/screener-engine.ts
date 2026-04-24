@@ -15,23 +15,44 @@ interface CandleStore {
 }
 
 const RSI_PERIOD = 14
-// FIX: кэш RSI чтобы не пересчитывать при каждом getRows() если данные не изменились
+
+// FIX(audit): кэш RSI чтобы не пересчитывать при каждом getRows() если данные не изменились
 interface RsiCache {
   value: number
-  candleCount: number  // длина массива на момент вычисления
+  candleCount: number
 }
 
+/**
+ * FIX(audit): Wilder's Smoothing (EMA-based RSI) — стандарт TradingView/биржей.
+ * Простое среднее (SMA) давало значительное расхождение с реальным RSI.
+ *
+ * Алгоритм:
+ *  1. Первый RSI_PERIOD — SMA для начального avgGain/avgLoss
+ *  2. Далее: avgGain = (prev * (N-1) + curr) / N  (Wilder's EMA, α = 1/N)
+ */
 function computeRsi(closes: number[]): number | null {
   if (closes.length < RSI_PERIOD + 1) return null
-  const slice = closes.slice(-RSI_PERIOD - 1)
-  let gains = 0, losses = 0
-  for (let i = 1; i < slice.length; i++) {
-    const diff = slice[i]! - slice[i - 1]!
-    if (diff > 0) gains += diff
-    else losses += Math.abs(diff)
+
+  // Шаг 1: начальные средние по первым RSI_PERIOD изменениям
+  let avgGain = 0
+  let avgLoss = 0
+  for (let i = 1; i <= RSI_PERIOD; i++) {
+    const diff = closes[i]! - closes[i - 1]!
+    if (diff > 0) avgGain += diff
+    else avgLoss += Math.abs(diff)
   }
-  const avgGain = gains / RSI_PERIOD
-  const avgLoss = losses / RSI_PERIOD
+  avgGain /= RSI_PERIOD
+  avgLoss /= RSI_PERIOD
+
+  // Шаг 2: Wilder's smoothing для оставшихся точек
+  for (let i = RSI_PERIOD + 1; i < closes.length; i++) {
+    const diff = closes[i]! - closes[i - 1]!
+    const gain = diff > 0 ? diff : 0
+    const loss = diff < 0 ? Math.abs(diff) : 0
+    avgGain = (avgGain * (RSI_PERIOD - 1) + gain) / RSI_PERIOD
+    avgLoss = (avgLoss * (RSI_PERIOD - 1) + loss) / RSI_PERIOD
+  }
+
   if (avgLoss === 0) return 100
   const rs = avgGain / avgLoss
   return 100 - 100 / (1 + rs)
@@ -39,8 +60,6 @@ function computeRsi(closes: number[]): number | null {
 
 export class ScreenerEngine {
   private candles: CandleStore = {}
-  // FIX: кэш вычисленных RSI — ключ: `${symbol}:${tf}`
-  // Инвалидируется когда candleCount изменился (пришла новая свеча)
   private rsiCache = new Map<string, RsiCache>()
   onClose?: (row: ScreenerRow) => void
 
@@ -53,15 +72,11 @@ export class ScreenerEngine {
     const arr = this.candles[symbol]![tf]!
     arr.push(candle)
     if (arr.length > 200) arr.shift()
-    // Инвалидируем кэш RSI для этой пары при новой свече
     this.rsiCache.delete(`${symbol}:${tf}`)
   }
 
-  // FIX: warm-up метод — позволяет загрузить исторические свечи при старте
-  // Вызывается из main.ts перед началом обработки потока
   warmUp(symbol: string, tf: string, candles: NormalizedCandle[]): void {
     if (!this.candles[symbol]) this.candles[symbol] = {}
-    // берём последние 200 (лимит хранилища)
     this.candles[symbol]![tf] = candles.slice(-200)
     this.rsiCache.delete(`${symbol}:${tf}`)
   }
@@ -76,7 +91,6 @@ export class ScreenerEngine {
     if (screener === 'rsi') {
       const cacheKey = `${symbol}:${tf}`
       const cached = this.rsiCache.get(cacheKey)
-      // FIX: используем кэш если количество свечей не изменилось
       if (cached && cached.candleCount === arr.length) {
         value = cached.value
       } else {
@@ -102,7 +116,6 @@ export class ScreenerEngine {
     return rows
   }
 
-  // Статистика для healthcheck / debug
   stats(): { symbols: number; cachedRsi: number } {
     return {
       symbols: Object.keys(this.candles).length,

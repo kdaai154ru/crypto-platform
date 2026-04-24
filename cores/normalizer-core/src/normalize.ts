@@ -47,15 +47,25 @@ export function normalizeTrade(
   const parsed = RawTradeSchema.safeParse(raw);
   if (!parsed.success) return null;
   const d = parsed.data;
+
+  // FIX(audit): если side неизвестен — НЕ подставляем 'buy' по умолчанию.
+  // Трейды с null side исключаются из расчёта CVD delta в trade-processor,
+  // чтобы не искажать buy/sell объёмы.
+  if (!d.side) return null;
+
   return {
     exchange,
     symbol:   d.symbol,
     price:    d.price,
-    amount:   d.amount,
-    side:     (d.side === 'buy' || d.side === 'sell') ? d.side : 'buy',
+    qty:      d.amount,
+    side:     d.side,
     ts:       d.timestamp,
     usdValue: d.price * d.amount,
     isLarge:  d.price * d.amount > 100_000,
+    sizeLabel: d.price * d.amount >= 1_000_000 ? 'XL'
+             : d.price * d.amount >= 100_000   ? 'L'
+             : d.price * d.amount >= 10_000    ? 'M'
+             : 'S',
   };
 }
 
@@ -66,14 +76,20 @@ export function normalizeTicker(
   const parsed = RawTickerSchema.safeParse(raw);
   if (!parsed.success) return null;
   const d = parsed.data;
+  const bid = d.bid ?? 0;
+  const ask = d.ask ?? 0;
   return {
     exchange,
-    symbol:  d.symbol,
-    last:    d.last ?? 0,
-    bid:     d.bid  ?? 0,
-    ask:     d.ask  ?? 0,
-    volume:  d.volume ?? 0,
-    ts:      Date.now(),
+    symbol:   d.symbol,
+    last:     d.last ?? 0,
+    bid,
+    ask,
+    spread:   ask > 0 && bid > 0 ? ask - bid : 0,
+    vol24h:   d.volume ?? 0,
+    change24h: 0,
+    high24h:  0,
+    low24h:   0,
+    ts:       Date.now(),
   };
 }
 
@@ -88,5 +104,18 @@ export function normalizeCandle(
   ]).safeParse(c);
   if (!row.success) return null;
   const [ts, open, high, low, close, volume] = row.data;
-  return { exchange, symbol, tf, ts, open, high, low, close, volume };
+  return {
+    exchange,
+    symbol,
+    tf,
+    ts,
+    open,
+    high,
+    low,
+    close,
+    volume,
+    buyVolume:  0,
+    sellVolume: 0,
+    isClosed:   false,
+  };
 }
