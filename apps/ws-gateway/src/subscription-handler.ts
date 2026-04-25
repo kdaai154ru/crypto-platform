@@ -18,6 +18,13 @@ export class SubscriptionHandler {
   subscribe(id: string, channels: string[], symbol?: string): void {
     if (!channels || channels.length === 0) return;
 
+    // FIX: guard empty/missing symbol — do not publish sub:request without a valid symbol
+    const sym = symbol?.trim();
+    if (!sym) {
+      this.log.warn({ clientId: id, channels }, 'subscribe: symbol is empty or missing, skipping');
+      return;
+    }
+
     const client = this.connectionManager.get(id);
     if (!client) {
       this.log.warn({ clientId: id }, 'Client not found for subscribe');
@@ -36,12 +43,13 @@ export class SubscriptionHandler {
 
       const added = this.connectionManager.addSubscription(id, channel);
       if (added) {
+        // FIX: use viewerId (not clientId) to match subscription-core JSON contract
         this.valkey.publish(
           'sub:request',
           JSON.stringify({
-            clientId: id,
+            viewerId: id,
             channel,
-            symbol,
+            symbol: sym,
           })
         ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:request'));
       }
@@ -57,16 +65,21 @@ export class SubscriptionHandler {
     const client = this.connectionManager.get(id);
     if (!client) return;
 
+    const sym = symbol?.trim();
+
     for (const channel of channels) {
       this.connectionManager.removeSubscription(id, channel);
-      this.valkey.publish(
-        'sub:release',
-        JSON.stringify({
-          clientId: id,
-          channel,
-          symbol,
-        })
-      ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:release'));
+      // FIX: use viewerId to match subscription-core contract; skip if no symbol
+      if (sym) {
+        this.valkey.publish(
+          'sub:release',
+          JSON.stringify({
+            viewerId: id,
+            channel,
+            symbol: sym,
+          })
+        ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:release'));
+      }
     }
   }
 
@@ -80,10 +93,11 @@ export class SubscriptionHandler {
     const channels = Array.from(client.subscriptions);
     for (const channel of channels) {
       this.connectionManager.removeSubscription(id, channel);
+      // FIX: viewerId key + no symbol needed for cleanup on disconnect
       this.valkey.publish(
         'sub:release',
         JSON.stringify({
-          clientId: id,
+          viewerId: id,
           channel,
         })
       ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:release'));
