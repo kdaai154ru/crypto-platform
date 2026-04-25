@@ -1,23 +1,16 @@
 // cores/storage-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
-import Valkey from 'iovalkey';
+import { createValkeyClient } from '@crypto-platform/utils';
 import { ValkeyStore } from './valkey-store.js';
 
 const env = loadEnv(BaseSchema.merge(ValkeySchema));
+void env;
 const log = createLogger('storage-core');
 
-const VALKEY_OPTS = {
-  host: env.VALKEY_HOST,
-  port: env.VALKEY_PORT,
-  retryStrategy: (times: number) => Math.min(times * 100, 3000),
-  keepAlive: 10000,
-  enableOfflineQueue: true,
-};
-
-const client = new Valkey(VALKEY_OPTS);
-const hb     = new Valkey(VALKEY_OPTS);
-const sub    = new Valkey(VALKEY_OPTS);
+const client = createValkeyClient();
+const hb     = createValkeyClient();
+const sub    = createValkeyClient();
 
 client.on('error', (e: Error) => log.warn({ err: e.message }, 'client connection error'));
 hb.on('error',     (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
@@ -33,7 +26,6 @@ sub.on('message', (ch: string, msg: string) => {
     if (ch === 'agg:ticker') {
       store.setTicker(d.symbol, d).catch((e: unknown) => log.error(e, 'setTicker failed'));
     } else if (ch === 'agg:candle') {
-      // FIX: agg:candle принимался но не сохранялся — добавлена запись в Valkey
       const exchange = d.exchange ?? 'unknown';
       const symbol   = d.symbol   ?? 'unknown';
       const tf       = d.tf       ?? '1m';
@@ -44,7 +36,7 @@ sub.on('message', (ch: string, msg: string) => {
 
 const hbInterval = setInterval(
   () => hb.set('heartbeat:storage-core', Date.now().toString(), 'EX', 30),
-  5_000
+  5_000,
 );
 
 const shutdown = () => {

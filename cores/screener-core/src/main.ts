@@ -1,25 +1,18 @@
 // cores/screener-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
-import Valkey from 'iovalkey';
+import { createValkeyClient } from '@crypto-platform/utils';
 import type { NormalizedCandle } from '@crypto-platform/types';
 import { ScreenerEngine } from './screener-engine.js';
 
 const env = loadEnv(BaseSchema.merge(ValkeySchema));
+void env;
 const log = createLogger('screener-core');
 
-const VALKEY_OPTS = {
-  host: env.VALKEY_HOST,
-  port: env.VALKEY_PORT,
-  retryStrategy: (times: number) => Math.min(times * 100, 3000),
-  keepAlive: 10000,
-  enableOfflineQueue: true,
-};
-
-const sub    = new Valkey(VALKEY_OPTS);
-const pub    = new Valkey(VALKEY_OPTS);
-const hb     = new Valkey(VALKEY_OPTS);
-const reader = new Valkey(VALKEY_OPTS);
+const sub    = createValkeyClient();
+const pub    = createValkeyClient();
+const hb     = createValkeyClient();
+const reader = createValkeyClient();
 
 sub.on('error',    (e: Error) => log.warn({ err: e.message }, 'sub connection error'));
 pub.on('error',    (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
@@ -31,9 +24,6 @@ const engine = new ScreenerEngine({ tfs: SCREENER_TIMEFRAMES, maxPairs: 1000 });
 
 async function warmUpFromValkey(): Promise<void> {
   try {
-    // FIX: accumulate ALL candles per symbol:tf first, THEN call warmUp()
-    // Previous code called warmUp(symbol, tf, [singleCandle]) in the SCAN loop,
-    // replacing the array with 1 element each iteration — RSI never had enough history.
     const buckets = new Map<string, NormalizedCandle[]>();
 
     let cursor = '0';
@@ -43,7 +33,6 @@ async function warmUpFromValkey(): Promise<void> {
       cursor = nextCursor;
       scanned += keys.length;
 
-      // Pipeline GET requests for this batch
       const pipeline = reader.pipeline();
       for (const key of keys) pipeline.get(key);
       const results = await pipeline.exec();
@@ -51,7 +40,7 @@ async function warmUpFromValkey(): Promise<void> {
 
       for (let i = 0; i < keys.length; i++) {
         const res = results[i];
-        if (!res || res[0]) continue; // res[0] is error
+        if (!res || res[0]) continue;
         const raw = res[1] as string | null;
         if (!raw) continue;
         try {
@@ -63,35 +52,24 @@ async function warmUpFromValkey(): Promise<void> {
           ) {
             const bucketKey = `${candle.symbol}:${candle.tf}`;
             let bucket = buckets.get(bucketKey);
-            if (!bucket) {
-              bucket = [];
-              buckets.set(bucketKey, bucket);
-            }
+            if (!bucket) { bucket = []; buckets.set(bucketKey, bucket); }
             bucket.push(candle);
           }
         } catch { /* skip malformed */ }
       }
     } while (cursor !== '0');
 
-    // Now call warmUp() once per symbol:tf with full sorted history
     let warmedUp = 0;
     for (const [bucketKey, candles] of buckets) {
       const [symbol, tf] = bucketKey.split(':') as [string, string];
-      // Sort ascending by open time so RSI calculation is deterministic
       candles.sort((a, b) => a.ts - b.ts);
       engine.warmUp(symbol, tf, candles);
       warmedUp++;
     }
 
-    log.info(
-      { scanned, buckets: buckets.size, warmedUp: warmedUp },
-      'screener warm-up from Valkey complete'
-    );
+    log.info({ scanned, buckets: buckets.size, warmedUp }, 'screener warm-up from Valkey complete');
   } catch (e) {
-    log.warn(
-      { err: e },
-      'screener warm-up failed, starting cold — RSI needs 15+ candles to accumulate'
-    );
+    log.warn({ err: e }, 'screener warm-up failed, starting cold');
   }
 }
 
@@ -99,9 +77,6 @@ let publishErrors = 0;
 const MAX_PUBLISH_ERRORS = 5;
 let publishDisabled = false;
 
-// FIX #7: resubscribe на agg:candle при каждом reconnect.
-// iovalkey НЕ восстанавливает pub/sub подписки автоматически после обрыва TCP.
-// Без этого screener-core молча перестаёт получать данные после reconnect.
 function setupSubscriptions(): void {
   sub.subscribe('agg:candle', (e: unknown) => {
     if (e) log.error(e, 'subscribe error');
@@ -118,26 +93,17 @@ sub.on('message', (_: string, msg: string) => {
     const c = JSON.parse(msg) as NormalizedCandle;
     if (!SCREENER_TIMEFRAMES.includes(c.tf)) return;
     engine.update(c);
-  } catch (e: unknown) {
-    log.error(e);
-  }
+  } catch (e: unknown) { log.error(e); }
 });
 
-// FIX #14: isPublishing mutex prevents parallel async publish invocations.
-// setInterval with async callback does NOT wait for the previous tick to
-// complete — if Valkey is slow, two publish calls can overlap and produce
-// duplicate screener:update messages.
 let isPublishing = false;
 
-// FIX: save ref so clearInterval can run in shutdown
 const publishInterval = setInterval(async () => {
   if (publishDisabled || isPublishing) return;
   isPublishing = true;
-
   try {
     const rows = engine.getRows('rsi');
     if (!rows.length) return;
-
     await pub.publish('screener:update', JSON.stringify(rows));
     if (publishErrors > 0) {
       publishErrors = 0;
@@ -162,14 +128,12 @@ const publishInterval = setInterval(async () => {
   }
 }, 30_000);
 
-// FIX: save ref so clearInterval can run in shutdown
 const hbInterval = setInterval(
   () => hb.set('heartbeat:screener-core', Date.now().toString(), 'EX', 30),
   5_000,
 );
 
 const shutdown = async () => {
-  // FIX: clear both timers before quitting connections
   clearInterval(publishInterval);
   clearInterval(hbInterval);
   await sub.quit();

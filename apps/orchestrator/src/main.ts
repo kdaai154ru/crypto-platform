@@ -1,7 +1,7 @@
 // apps/orchestrator/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
-import Valkey from 'iovalkey';
+import { createValkeyClient } from '@crypto-platform/utils';
 import Fastify from 'fastify';
 import { ModuleRegistry } from './module-registry.js';
 import { HealthMonitor } from './health-monitor.js';
@@ -27,10 +27,10 @@ const env = loadEnv(
 );
 const log = createLogger('orchestrator');
 
-const valkey = new Valkey({ host: env.VALKEY_HOST, port: env.VALKEY_PORT });
-const hbValkey = new Valkey({ host: env.VALKEY_HOST, port: env.VALKEY_PORT });
+const valkey   = createValkeyClient();
+const hbValkey = createValkeyClient();
 
-valkey.on('error', (err: Error) => log.error({ err }, 'Valkey main connection error'));
+valkey.on('error',   (err: Error) => log.error({ err }, 'Valkey main connection error'));
 hbValkey.on('error', (err: Error) => log.error({ err }, 'Valkey heartbeat connection error'));
 
 const registry = new ModuleRegistry(log, {
@@ -56,15 +56,12 @@ const monitor = new HealthMonitor(
       return;
     }
 
-    const activePairs = pairsRaw ? parseInt(pairsRaw, 10) : 0;
+    const activePairs   = pairsRaw   ? parseInt(pairsRaw, 10)   : 0;
     const activeClients = clientsRaw ? parseInt(clientsRaw, 10) : 0;
     let exchanges: any[] = [];
     if (exchangesRaw) {
-      try {
-        exchanges = JSON.parse(exchangesRaw);
-      } catch (err) {
-        log.error({ err, exchangesRaw }, 'Failed to parse exchanges JSON');
-      }
+      try { exchanges = JSON.parse(exchangesRaw); }
+      catch (err) { log.error({ err, exchangesRaw }, 'Failed to parse exchanges JSON'); }
     }
 
     activePairsGauge.set(activePairs);
@@ -73,8 +70,8 @@ const monitor = new HealthMonitor(
     const modules = registry.all();
     for (const m of modules) {
       const statusValue =
-        m.status === 'online' ? 1
-        : m.status === 'degraded' ? 0.5
+        m.status === 'online'     ? 1
+        : m.status === 'degraded'   ? 0.5
         : m.status === 'restarting' ? 0.25
         : 0;
       moduleStatusGauge.set({ module: m.id }, statusValue);
@@ -86,43 +83,18 @@ const monitor = new HealthMonitor(
   log
 );
 
-/**
- * FIX(audit): расширен IP whitelist:
- *  - ::ffff:127.x.x.x  — IPv4-mapped loopback (Docker/Node иногда возвращает этот формат)
- *  - fe80:              — IPv6 link-local
- *  - fc/fd              — IPv6 unique-local (RFC 4193)
- *  - 172.16-31.x.x     — Docker default bridge
- *  - 192.168.x.x       — Docker custom networks / host LAN
- */
 function isPrivateIp(ip: string): boolean {
   if (!ip) return false;
-
-  // IPv4 loopback
   if (ip === '127.0.0.1') return true;
-
-  // IPv6 loopback
   if (ip === '::1') return true;
-
-  // IPv4-mapped loopback (::ffff:127.x.x.x)
   if (ip.startsWith('::ffff:127.')) return true;
-
-  // IPv6 link-local (fe80::/10)
   if (ip.toLowerCase().startsWith('fe80:')) return true;
-
-  // IPv6 unique-local (fc00::/7 — covers fc and fd prefixes)
   const lower = ip.toLowerCase();
   if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
-
-  // 10.x.x.x
   if (ip.startsWith('10.')) return true;
-
-  // 172.16.0.0/12 → 172.16.x.x – 172.31.x.x
   const m = ip.match(/^172\.(\d+)\./);
   if (m && parseInt(m[1]!, 10) >= 16 && parseInt(m[1]!, 10) <= 31) return true;
-
-  // 192.168.x.x
   if (ip.startsWith('192.168.')) return true;
-
   return false;
 }
 
@@ -147,7 +119,6 @@ async function start() {
 
   api.addHook('onRequest', ipWhitelist);
 
-  // Root route — краткий обзор сервиса
   api.get('/', async () => ({
     service: 'orchestrator',
     version: process.env.npm_package_version ?? '0.0.0',
@@ -170,9 +141,7 @@ async function shutdown() {
   monitor.stop();
   valkey.quit();
   hbValkey.quit();
-  if (metricsServer) {
-    await metricsServer.close();
-  }
+  if (metricsServer) await metricsServer.close();
   process.exit(0);
 }
 

@@ -1,29 +1,21 @@
 // cores/worker-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
-import Valkey from 'iovalkey';
+import { createValkeyClient } from '@crypto-platform/utils';
 import { Scheduler } from './scheduler.js';
 import { createJobs } from './jobs.js';
 
 const env = loadEnv(BaseSchema.merge(ValkeySchema));
+void env;
 const log = createLogger('worker-core');
 
-const VALKEY_OPTS = {
-  host: env.VALKEY_HOST,
-  port: env.VALKEY_PORT,
-  retryStrategy: (times: number) => Math.min(times * 100, 3000),
-  keepAlive: 10000,
-  enableOfflineQueue: true,
-};
-
-const valkey = new Valkey(VALKEY_OPTS);
-const hb     = new Valkey(VALKEY_OPTS);
+const valkey = createValkeyClient();
+const hb     = createValkeyClient();
 
 valkey.on('error', (e: Error) => log.warn({ err: e.message }, 'valkey connection error'));
 hb.on('error',     (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
 const scheduler = new Scheduler(log);
-// FIX: передаём log в createJobs — убираем последний console.log из проекта
 const jobs = createJobs(valkey, log);
 for (const job of jobs) scheduler.register(job);
 

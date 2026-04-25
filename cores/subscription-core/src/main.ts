@@ -1,23 +1,16 @@
 // cores/subscription-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
-import Valkey from 'iovalkey';
+import { createValkeyClient } from '@crypto-platform/utils';
 import { SubscriptionManager } from './subscription-manager.js';
 
 const env = loadEnv(BaseSchema.merge(ValkeySchema));
+void env;
 const log = createLogger('subscription-core');
 
-const VALKEY_OPTS = {
-  host: env.VALKEY_HOST,
-  port: env.VALKEY_PORT,
-  retryStrategy: (times: number) => Math.min(times * 100, 3000),
-  keepAlive: 10000,
-  enableOfflineQueue: true,
-};
-
-const sub = new Valkey(VALKEY_OPTS);
-const pub = new Valkey(VALKEY_OPTS);
-const hb  = new Valkey(VALKEY_OPTS);
+const sub = createValkeyClient();
+const pub = createValkeyClient();
+const hb  = createValkeyClient();
 
 sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error'));
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
@@ -25,9 +18,8 @@ hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'
 
 const manager = new SubscriptionManager(log, 60_000);
 manager.on('start_stream', (sym: string, ch: string[]) => pub.publish('stream:start', JSON.stringify({ symbol: sym, channels: ch })));
-manager.on('stop_stream',  (sym: string)                => pub.publish('stream:stop',  JSON.stringify({ symbol: sym })));
+manager.on('stop_stream',  (sym: string)               => pub.publish('stream:stop',  JSON.stringify({ symbol: sym })));
 
-// FIX: guard против двойного replay при быстром exchange:ready (reconnect шторм)
 let isReplaying = false;
 const REPLAY_DEBOUNCE_MS = 5_000;
 
@@ -52,12 +44,7 @@ sub.subscribe('sub:request', 'sub:release', 'exchange:ready', (e: unknown) => { 
 sub.on('message', (ch: string, msg: string) => {
   try {
     if (ch === 'sub:request') {
-      const { viewerId, symbol, channels } = JSON.parse(msg) as {
-        viewerId: string;
-        symbol: string;
-        channels?: string[];
-      };
-      // FIX: guard channels undefined — normalise to empty array if missing
+      const { viewerId, symbol, channels } = JSON.parse(msg) as { viewerId: string; symbol: string; channels?: string[] };
       manager.subscribe(viewerId, symbol, Array.isArray(channels) ? channels : []);
     } else if (ch === 'sub:release') {
       const { viewerId, symbol } = JSON.parse(msg) as { viewerId: string; symbol: string };

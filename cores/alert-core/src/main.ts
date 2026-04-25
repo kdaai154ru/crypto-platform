@@ -1,8 +1,8 @@
 // cores/alert-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
+import { createValkeyClient } from '@crypto-platform/utils';
 import { z } from 'zod';
-import Valkey from 'iovalkey';
 import { AlertEvaluator } from './alert-evaluator.js';
 import { AlertRule, AlertRuleSchema } from './alert-rule.js';
 import { createMetricsServer, type MetricsServer } from '@crypto-platform/metrics';
@@ -12,23 +12,16 @@ const env = loadEnv(
     z.object({ METRICS_PORT: z.coerce.number().default(4010) })
   )
 );
+void env;
 const log = createLogger('alert-core');
 
-const VALKEY_OPTS = {
-  host: env.VALKEY_HOST,
-  port: env.VALKEY_PORT,
-  retryStrategy: (times: number) => Math.min(times * 100, 3_000),
-  keepAlive: 10_000,
-  enableOfflineQueue: true,
-};
+const db  = createValkeyClient();
+const sub = createValkeyClient();
+const hb  = createValkeyClient();
 
-const db = new Valkey(VALKEY_OPTS);
-const sub = new Valkey(VALKEY_OPTS);
-const hb = new Valkey(VALKEY_OPTS);
-
-db.on('error', (e: Error) => log.warn({ err: e.message }, 'db error'));
+db.on('error',  (e: Error) => log.warn({ err: e.message }, 'db error'));
 sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub error'));
-hb.on('error', (e: Error) => log.warn({ err: e.message }, 'hb error'));
+hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb error'));
 
 const evaluator = new AlertEvaluator(log, db);
 
@@ -37,10 +30,7 @@ let rules: AlertRule[] = [];
 async function loadRules(): Promise<void> {
   try {
     const raw = await db.hgetall('alert:rules');
-    if (!raw) {
-      rules = [];
-      return;
-    }
+    if (!raw) { rules = []; return; }
     const parsed: AlertRule[] = [];
     for (const [id, json] of Object.entries(raw)) {
       try {
@@ -98,26 +88,20 @@ async function start(): Promise<void> {
       return;
     }
     if (isNaN(value)) return;
-    const snapshot = rules;
-    const events = evaluator.evaluate(snapshot, metric, symbol, value);
+    const events = evaluator.evaluate(rules, metric, symbol, value);
     if (events.length > 0) {
       publishAlertEvents(events).catch((e: unknown) => log.error(e, 'publishAlertEvents failed'));
     }
   });
 
   await new Promise<void>((resolve, reject) => {
-    sub.subscribe('alert:rules:updated', (e) => {
-      if (e) reject(e); else resolve();
-    });
+    sub.subscribe('alert:rules:updated', (e) => { if (e) reject(e); else resolve(); });
   });
 
   await new Promise<void>((resolve, reject) => {
-    sub.psubscribe('indicator:*', (e) => {
-      if (e) reject(e); else resolve();
-    });
+    sub.psubscribe('indicator:*', (e) => { if (e) reject(e); else resolve(); });
   });
 
-  // FIX #9: use .catch() instead of async setInterval to prevent unhandled rejection
   hbTimer = setInterval(() => {
     hb.set('heartbeat:alert-core', Date.now().toString(), 'EX', 30)
       .catch((e: Error) => log.warn({ err: e.message }, 'hb set failed'));

@@ -1,22 +1,15 @@
 // cores/etf-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
-import Valkey from 'iovalkey';
+import { createValkeyClient } from '@crypto-platform/utils';
 import { ETFFetcher } from './etf-fetcher.js';
 
 const env = loadEnv(BaseSchema.merge(ValkeySchema));
+void env;
 const log = createLogger('etf-core');
 
-const VALKEY_OPTS = {
-  host: env.VALKEY_HOST,
-  port: env.VALKEY_PORT,
-  retryStrategy: (times: number) => Math.min(times * 100, 3000),
-  keepAlive: 10000,
-  enableOfflineQueue: true,
-};
-
-const pub = new Valkey(VALKEY_OPTS);
-const hb  = new Valkey(VALKEY_OPTS);
+const pub = createValkeyClient();
+const hb  = createValkeyClient();
 
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
@@ -24,8 +17,8 @@ hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'
 const fetcher = new ETFFetcher();
 
 let consecutiveErrors = 0;
-const MAX_BACKOFF_MS   = 5 * 60 * 1000; // 5 минут
-const BASE_BACKOFF_MS  = 5_000;          // 5 секунд
+const MAX_BACKOFF_MS  = 5 * 60 * 1000;
+const BASE_BACKOFF_MS = 5_000;
 
 async function fetchAndPublish(): Promise<void> {
   try {
@@ -44,18 +37,27 @@ async function fetchAndPublish(): Promise<void> {
   }
 }
 
-// Запускаем первый фетч, затем повторяем каждый час
 (async function loop() {
   while (true) {
     await fetchAndPublish();
-    // Ждём час только если нет ошибки (consecutiveErrors === 0)
     if (consecutiveErrors === 0) {
       await new Promise(r => setTimeout(r, 60 * 60 * 1000));
     }
   }
 })();
 
-setInterval(() => hb.set('heartbeat:etf-core', Date.now().toString(), 'EX', 30), 5_000);
+const hbTimer = setInterval(
+  () => hb.set('heartbeat:etf-core', Date.now().toString(), 'EX', 30),
+  5_000,
+);
 
-process.on('SIGTERM', () => { pub.quit(); hb.quit(); process.exit(0); });
+const shutdown = () => {
+  clearInterval(hbTimer);
+  pub.quit();
+  hb.quit();
+  process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 log.info('etf-core started');
