@@ -32,10 +32,10 @@ const BLOCK_MS = 100;
 const COUNT = 100;
 const POLL_INTERVAL_MS = 1000;
 
-// FIX: PEL dead-letter constants
-const PEL_CLAIM_IDLE_MS = 60_000;     // сообщение считается зависшим после 60s
-const PEL_CLAIM_COUNT = 50;           // за одну итерацию reclaim не более 50
-const MAX_DELIVERY_COUNT = 3;         // после 3 попыток — dead-letter (XACK + log)
+// PEL dead-letter constants
+const PEL_CLAIM_IDLE_MS = 60_000;
+const PEL_CLAIM_COUNT = 50;
+const MAX_DELIVERY_COUNT = 3;
 const PEL_RECLAIM_INTERVAL_MS = 60_000;
 
 interface StreamMessage {
@@ -48,7 +48,7 @@ export class ValkeyStreams {
   private isRunning = true;
   private logger: Logger;
   private reclaimTimer: ReturnType<typeof setInterval> | null = null;
-  // FIX #1: guard против двойного запуска pollLoop при reconnect Valkey
+  // Guard против двойного запуска pollLoop при reconnect Valkey
   private isPolling = false;
 
   constructor(
@@ -66,7 +66,7 @@ export class ValkeyStreams {
     this.subscriber.on('ready', async () => {
       this.logger.info('Valkey subscriber ready, setting up consumer groups');
       try {
-        // FIX #2: при reconnect очищаем старый reclaimTimer чтобы не было утечки
+        // При reconnect очищаем старый reclaimTimer чтобы не было утечки
         if (this.reclaimTimer) {
           clearInterval(this.reclaimTimer);
           this.reclaimTimer = null;
@@ -77,7 +77,7 @@ export class ValkeyStreams {
 
         if (this.isRunning) {
           this.startReclaimTimer();
-          // FIX #1: запускаем pollLoop только если он уже не запущен
+          // Запускаем pollLoop только если он уже не запущен
           if (!this.isPolling) {
             this.isPolling = true;
             this.pollLoop().finally(() => {
@@ -123,7 +123,6 @@ export class ValkeyStreams {
     }
   }
 
-  // FIX: запускаем таймер reclaim PEL
   private startReclaimTimer(): void {
     this.reclaimTimer = setInterval(() => {
       this.reclaimStalePending().catch((err) => {
@@ -133,14 +132,13 @@ export class ValkeyStreams {
   }
 
   /**
-   * FIX #3: XPENDING батчем вместо N+1 запросов.
-   * Один XPENDING на весь stream за итерацию reclaimStalePending.
-   * Строим Map<msgId, deliveryCount> из результата и проверяем по нему.
+   * XPENDING батчем вместо N+1 запросов.
+   * Один XPENDING на весь stream за итерацию.
+   * Map<msgId, deliveryCount> строится из результата.
    */
   private async reclaimStalePending(): Promise<void> {
     for (const stream of STREAM_KEYS) {
       try {
-        // XAUTOCLAIM: iovalkey возвращает [nextStartId, [[id, fields], ...]]
         const result = await (this.subscriber as unknown as {
           xautoclaim(stream: string, group: string, consumer: string,
             minIdleTime: number, start: string,
@@ -155,7 +153,7 @@ export class ValkeyStreams {
 
         const messages = result[1];
 
-        // FIX #3: один XPENDING на весь batch вместо N отдельных запросов
+        // Один XPENDING на весь batch — O(1) запрос вместо O(N)
         const pendingList = await this.subscriber.xpending(
           stream, CONSUMER_GROUP, '-', '+', messages.length
         ) as Array<[string, string, number, number]>;
@@ -180,12 +178,10 @@ export class ValkeyStreams {
           }
         }
 
-        // XACK dead-letter сразу без обработки
         if (deadLetterIds.length > 0) {
           await this.subscriber.xack(stream, CONSUMER_GROUP, ...deadLetterIds);
         }
 
-        // Повторно обрабатываем остальные
         if (retryMessages.length > 0) {
           await this.handleStreamResults([[stream, retryMessages]]);
         }
@@ -234,6 +230,7 @@ export class ValkeyStreams {
       }
       if (!messages || messages.length === 0) continue;
 
+      // getByChannel() called ONCE per stream, not per message — O(clients) not O(messages*clients)
       const clients = this.connectionManager.getByChannel(wsChannel);
       const msgIds: string[] = [];
 
@@ -269,6 +266,7 @@ export class ValkeyStreams {
         }
 
         const outgoing: StreamMessage = { type: wsChannel, data };
+        // payload serialised ONCE per message, reused for all clients — correct O(messages) not O(messages*clients)
         const payload = JSON.stringify(outgoing);
         const messageTs = typeof data?.ts === 'number' ? data.ts : undefined;
 
@@ -297,7 +295,6 @@ export class ValkeyStreams {
 
   async close(): Promise<void> {
     this.isRunning = false;
-    // FIX: очищаем таймер reclaim при shutdown
     if (this.reclaimTimer) {
       clearInterval(this.reclaimTimer);
       this.reclaimTimer = null;

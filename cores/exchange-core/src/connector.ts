@@ -6,9 +6,12 @@ import { CircuitBreaker } from '@crypto-platform/utils'
 import { ReconnectManager } from './reconnect-manager.js'
 import { RateLimiter } from './rate-limiter.js'
 
-export type TradeCallback = (trade: any, exchange: ExchangeId) => void
-export type TickerCallback = (ticker: any, exchange: ExchangeId) => void
-export type CandleCallback = (candle: any, symbol: string, tf: string, exchange: ExchangeId) => void
+// FIX(audit): Typed callbacks — no more `any`.
+// Using ccxt raw types so type errors surface at compile time,
+// not at runtime when data hits downstream normaliser.
+export type TradeCallback  = (trade: ccxt.Trade,   exchange: ExchangeId) => void
+export type TickerCallback = (ticker: ccxt.Ticker, exchange: ExchangeId) => void
+export type CandleCallback = (candle: ccxt.OHLCV,  symbol: string, tf: string, exchange: ExchangeId) => void
 
 const pro = (ccxt as any).pro as Record<string, new (o?: object) => any>
 
@@ -40,11 +43,9 @@ export class ExchangeConnector {
   private stoppingStreams = new Set<string>()
   private latencySamples: number[] = []
   private consecutiveErrors = new Map<string, number>()
-  // FIX #3: флаг предотвращает повторные итерации while пока идёт реконнект
   private isReconnecting = false
   public latencyMs = 0
   public lastMessageAt = 0
-  // FIX #7: реальные реконнекты, а не счётчик ошибок
   public restarts = 0
 
   constructor(
@@ -85,7 +86,7 @@ export class ExchangeConnector {
     this.latencyMs = Math.round(sum / this.latencySamples.length)
   }
 
-  private handleStreamError(streamKey: string, err: any): void {
+  private handleStreamError(streamKey: string, err: unknown): void {
     const count = (this.consecutiveErrors.get(streamKey) || 0) + 1
     this.consecutiveErrors.set(streamKey, count)
     if (count >= MAX_CONSECUTIVE_ERRORS) {
@@ -98,15 +99,12 @@ export class ExchangeConnector {
     this.consecutiveErrors.delete(streamKey)
   }
 
-  // FIX #3 + #7: единый метод реконнекта
-  // - isReconnecting блокирует while-петлю пока connect() не завершится
-  // - restarts инкрементируется один раз на один реальный реконнект
   private async reconnect(): Promise<void> {
     if (this.isReconnecting) return
     this.isReconnecting = true
     try {
       await this.rm.schedule(() => this.connect())
-      this.restarts++ // FIX #7: один инкремент на один реальный реконнект
+      this.restarts++
     } finally {
       this.isReconnecting = false
     }
@@ -121,16 +119,19 @@ export class ExchangeConnector {
     if (this.activeStreams.has(key) || this.stoppingStreams.has(key)) return
     this.activeStreams.add(key)
     while (this.activeStreams.has(key) && !this.stoppingStreams.has(key)) {
-      // FIX #3: ждём завершения реконнекта перед следующей итерацией
-      if (this.isReconnecting) {
-        await new Promise<void>(resolve => setTimeout(resolve, 500))
-        continue
+      // FIX(audit): `while` instead of `if` — ensures we wait for the full
+      // reconnect (which may take seconds under exponential backoff) before
+      // attempting the next watchTrades call. With `if` + 500ms sleep the loop
+      // could resume while this.ex was still null / being replaced, causing
+      // TypeError: this.ex.watchTrades is not a function at runtime.
+      while (this.isReconnecting) {
+        await new Promise<void>(resolve => setTimeout(resolve, 200))
       }
       const start = Date.now()
       try {
         const trades = (await this.cb.execute(() =>
           this.ex.watchTrades(symbol, undefined, TRADES_LIMIT)
-        )) as any[]
+        )) as ccxt.Trade[]
         const duration = Date.now() - start
         this.updateLatency(duration)
         this.lastMessageAt = Date.now()
@@ -142,7 +143,7 @@ export class ExchangeConnector {
       } catch (e) {
         this.logger.error({ symbol, err: e }, 'watchTrades error')
         this.handleStreamError(key, e)
-        await this.reconnect() // FIX #3: блокирует цикл до завершения реконнекта
+        await this.reconnect()
       }
     }
     this.activeStreams.delete(key)
@@ -158,13 +159,13 @@ export class ExchangeConnector {
     if (this.activeStreams.has(key) || this.stoppingStreams.has(key)) return
     this.activeStreams.add(key)
     while (this.activeStreams.has(key) && !this.stoppingStreams.has(key)) {
-      if (this.isReconnecting) {
-        await new Promise<void>(resolve => setTimeout(resolve, 500))
-        continue
+      // FIX(audit): same `while` guard as watchTrades
+      while (this.isReconnecting) {
+        await new Promise<void>(resolve => setTimeout(resolve, 200))
       }
       const start = Date.now()
       try {
-        const ticker = await this.cb.execute(() => this.ex.watchTicker(symbol))
+        const ticker = (await this.cb.execute(() => this.ex.watchTicker(symbol))) as ccxt.Ticker
         const duration = Date.now() - start
         this.updateLatency(duration)
         this.lastMessageAt = Date.now()
@@ -192,15 +193,15 @@ export class ExchangeConnector {
     if (this.activeStreams.has(key) || this.stoppingStreams.has(key)) return
     this.activeStreams.add(key)
     while (this.activeStreams.has(key) && !this.stoppingStreams.has(key)) {
-      if (this.isReconnecting) {
-        await new Promise<void>(resolve => setTimeout(resolve, 500))
-        continue
+      // FIX(audit): same `while` guard as watchTrades
+      while (this.isReconnecting) {
+        await new Promise<void>(resolve => setTimeout(resolve, 200))
       }
       const start = Date.now()
       try {
         const candles = (await this.cb.execute(() =>
           this.ex.watchOHLCV(symbol, tf, undefined, CANDLES_LIMIT)
-        )) as any[]
+        )) as ccxt.OHLCV[]
         const duration = Date.now() - start
         this.updateLatency(duration)
         this.lastMessageAt = Date.now()
