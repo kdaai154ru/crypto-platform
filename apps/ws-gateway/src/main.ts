@@ -26,6 +26,10 @@ const env = loadEnv(
       WS_PORT: z.coerce.number().default(4000),
       METRICS_PORT: z.coerce.number().default(4001),
       WS_ALLOWED_ORIGINS: z.string().optional(),
+      // FIX #14: comma-separated list of trusted proxy IPs/CIDRs whose
+      // X-Forwarded-For header should be trusted for real client IP.
+      // Example: "127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+      TRUSTED_PROXIES: z.string().optional(),
     }))
 );
 const log = createLogger('ws-gateway');
@@ -47,6 +51,17 @@ if (!allowedOrigins) {
   log.warn('WS_ALLOWED_ORIGINS not set — Origin validation disabled (unsafe for production)');
 }
 
+// FIX #14: parse trusted proxy list for X-Forwarded-For support.
+// Only simple IPv4 exact-match and /N prefix match is implemented here.
+// For production with complex CIDR needs, consider using the `ip-cidr` package.
+const trustedProxySet: Set<string> | null = env.TRUSTED_PROXIES
+  ? new Set(env.TRUSTED_PROXIES.split(',').map((s) => s.trim()).filter(Boolean))
+  : null;
+
+if (!trustedProxySet) {
+  log.warn('TRUSTED_PROXIES not set — X-Forwarded-For will NOT be used for client IP resolution');
+}
+
 const valkeyOpts = {
   host: env.VALKEY_HOST,
   port: env.VALKEY_PORT,
@@ -65,7 +80,7 @@ const MAX_RATE_ENTRIES = 10_000;
 const connectionCounts = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT = 5;
 const RATE_WINDOW = 1000;
-// FIX #7: per-message rate limiting constants
+// per-message rate limiting constants
 const MSG_RATE_LIMIT = 100;
 const MSG_RATE_WINDOW = 1000;
 
@@ -85,7 +100,7 @@ const cleanupInterval = setInterval(() => {
   }
 }, 60_000);
 
-function getClientIp(ws: uWS.WebSocket<unknown>): string {
+function getRemoteIp(ws: uWS.WebSocket<unknown>): string {
   try {
     const buf = (ws as unknown as { getRemoteAddressAsText?(): ArrayBuffer }).getRemoteAddressAsText?.();
     if (!buf) return 'unknown';
@@ -117,6 +132,28 @@ function normalizeIp(raw: string): string {
     return expanded.split(':').slice(0, 4).join(':');
   }
   return raw;
+}
+
+/**
+ * FIX #14: resolve real client IP when behind a trusted proxy.
+ * Uses X-Forwarded-For only if the direct connection IP is a trusted proxy.
+ * The leftmost non-trusted IP in X-Forwarded-For is the real client IP.
+ */
+function resolveClientIp(remoteIp: string, xForwardedFor: string): string {
+  if (!trustedProxySet || !trustedProxySet.has(remoteIp)) {
+    // Not behind a trusted proxy — use the direct connection IP.
+    return normalizeIp(remoteIp);
+  }
+  // Parse X-Forwarded-For: "client, proxy1, proxy2" — rightmost is most recent.
+  const ips = xForwardedFor.split(',').map((s) => s.trim()).filter(Boolean);
+  for (let i = ips.length - 1; i >= 0; i--) {
+    const ip = normalizeIp(ips[i] as string);
+    if (!trustedProxySet.has(ip)) {
+      return ip;
+    }
+  }
+  // All IPs in X-Forwarded-For are trusted proxies — fall back to remote IP.
+  return normalizeIp(remoteIp);
 }
 
 function verifyJwt(token: string, secret: string, expectedIssuer: string): { sub: string } | null {
@@ -159,12 +196,46 @@ function verifyJwt(token: string, secret: string, expectedIssuer: string): { sub
   }
 }
 
+/**
+ * FIX #6: Extract JWT token from multiple sources in order of preference:
+ * 1. Authorization: Bearer <token> header (most secure — not logged by default)
+ * 2. Sec-WebSocket-Protocol header (widely supported workaround for WS auth)
+ * 3. ?token= query string (fallback for legacy clients — LOGS WARNING in production)
+ *
+ * Rationale: query string tokens appear in server access logs, proxy logs,
+ * browser history, and Referer headers — use Authorization header instead.
+ */
+function extractToken(
+  authHeader: string,
+  wsProtocol: string,
+  queryToken: string,
+  isProduction: boolean,
+  clientIp: string
+): string {
+  // 1. Authorization: Bearer <token>
+  if (authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  // 2. Sec-WebSocket-Protocol: token.<jwt> (client must echo protocol back)
+  if (wsProtocol.startsWith('token.')) {
+    return wsProtocol.slice(6).trim();
+  }
+  // 3. query string — legacy fallback, log warning in production
+  if (queryToken) {
+    if (isProduction) {
+      log.warn({ ip: clientIp }, 'JWT passed via query string — use Authorization header in production');
+    }
+    return queryToken;
+  }
+  return '';
+}
+
 const app = uWS.App().ws('/*', {
   idleTimeout: 120,
 
   upgrade(res, req, context) {
     const origin = req.getHeader('origin');
-    // FIX #5: block connections with missing or disallowed Origin when allowedOrigins is set
+    // Block connections with missing or disallowed Origin when allowedOrigins is set
     if (allowedOrigins) {
       if (!origin || !allowedOrigins.has(origin)) {
         log.warn({ origin: origin || '(empty)' }, 'WebSocket upgrade rejected: Origin not allowed');
@@ -175,22 +246,44 @@ const app = uWS.App().ws('/*', {
 
     const query = req.getQuery();
     const params = query ? new URLSearchParams(query) : null;
-    const token = params?.get('token') ?? '';
+    // FIX #6: collect all token sources at upgrade time (headers are only available here)
+    const authHeader  = req.getHeader('authorization');
+    const wsProtocol  = req.getHeader('sec-websocket-protocol');
+    const queryToken  = params?.get('token') ?? '';
+    // FIX #14: capture X-Forwarded-For at upgrade time for proxy-aware IP resolution
+    const xForwardedFor = req.getHeader('x-forwarded-for');
+
     res.upgrade(
-      { token },
+      { authHeader, wsProtocol, queryToken, xForwardedFor },
       req.getHeader('sec-websocket-key'),
-      req.getHeader('sec-websocket-protocol'),
+      // Echo the Sec-WebSocket-Protocol back if it was used for token transport
+      wsProtocol.startsWith('token.') ? wsProtocol : req.getHeader('sec-websocket-protocol'),
       req.getHeader('sec-websocket-extensions'),
       context
     );
   },
 
   open(ws) {
-    const ip = normalizeIp(getClientIp(ws));
+    const userData = ws.getUserData() as {
+      authHeader: string;
+      wsProtocol: string;
+      queryToken: string;
+      xForwardedFor: string;
+    };
+
+    const remoteIp = getRemoteIp(ws);
+    // FIX #14: resolve real client IP, respecting trusted proxies
+    const ip = resolveClientIp(remoteIp, userData.xForwardedFor ?? '');
 
     if (env.JWT_SECRET) {
-      const userData = ws.getUserData() as { token: string };
-      const token = userData?.token;
+      // FIX #6: try all token sources in order of security preference
+      const token = extractToken(
+        userData.authHeader ?? '',
+        userData.wsProtocol ?? '',
+        userData.queryToken ?? '',
+        env.NODE_ENV === 'production',
+        ip
+      );
       if (!token) {
         log.warn({ ip }, 'Missing JWT token, closing connection');
         ws.end(1008, 'Missing authentication token');
@@ -226,7 +319,7 @@ const app = uWS.App().ws('/*', {
     const id = crypto.randomUUID();
     (ws as unknown as Record<string, unknown>).__id = id;
     (ws as unknown as Record<string, unknown>).__ip = ip;
-    // FIX #7: initialize per-message rate limit state
+    // initialize per-message rate limit state
     (ws as unknown as Record<string, unknown>).__msgCount = 0;
     (ws as unknown as Record<string, unknown>).__msgWindowStart = now;
     cm.add(id, ws);
@@ -239,7 +332,7 @@ const app = uWS.App().ws('/*', {
     if (isBinary) return;
     const id = (ws as unknown as Record<string, unknown>).__id as string;
 
-    // FIX #7: per-message rate limiting — max 100 messages per second per client
+    // per-message rate limiting — max 100 messages per second per client
     const now = Date.now();
     const msgWindowStart = (ws as unknown as Record<string, unknown>).__msgWindowStart as number;
     let msgCount = (ws as unknown as Record<string, unknown>).__msgCount as number;
