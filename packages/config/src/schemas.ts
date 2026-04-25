@@ -8,8 +8,11 @@ export const BaseSchema = z.object({
 
 // ─── Valkey / Redis ──────────────────────────────────────────────────────────────────────────
 export const ValkeySchema = z.object({
-  VALKEY_HOST: z.string().default('127.0.0.1'),
-  VALKEY_PORT: z.coerce.number().int().min(1).max(65535).default(6379),
+  VALKEY_HOST:     z.string().default('127.0.0.1'),
+  VALKEY_PORT:     z.coerce.number().int().min(1).max(65535).default(6379),
+  // FIX: added VALKEY_PASSWORD — was missing, causing all iovalkey connections
+  // to fail with NOAUTH after Valkey was re-created with requirepass.
+  VALKEY_PASSWORD: z.string().default(''),
 });
 
 // ─── JWT ────────────────────────────────────────────────────────────────────────────────────
