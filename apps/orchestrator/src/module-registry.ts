@@ -1,7 +1,6 @@
 // apps/orchestrator/src/module-registry.ts
 import type { ModuleState, ModuleStatus } from '@crypto-platform/types';
 import type { Logger } from '@crypto-platform/logger';
-import type { Counter } from 'prom-client';
 
 const HEARTBEAT_TIMEOUT = 10_000;
 const RESTART_TIMEOUT  = 30_000;
@@ -24,10 +23,16 @@ export const MODULE_IDS = [
   'storage-core',
 ];
 
-// Use the real prom-client Counter type so the assignment in main.ts
-// (passing moduleRestartsCounter directly) is always type-compatible.
+// Structural interface that matches prom-client Counter<string>.inc overloads.
+// Using overloads (not a single optional-params signature) avoids the
+// TS2322 incompatibility where 'undefined' is not assignable to Partial<Record<...>>.
+export interface CounterLike {
+  inc(labels: Partial<Record<string, string | number>>, value?: number): void;
+  inc(value?: number): void;
+}
+
 export interface ModuleRegistryMetrics {
-  restartsCounter?: Counter<string>;
+  restartsCounter?: CounterLike;
 }
 
 export class ModuleRegistry {
@@ -104,11 +109,11 @@ export class ModuleRegistry {
   reset(id: string): void {
     const s = this.states.get(id);
     if (s) {
-      s.status    = 'offline';
+      s.status        = 'offline';
       s.lastHeartbeat = 0;
-      s.error     = undefined;
-      s.startedAt = 0;
-      s.uptimeMs  = 0;
+      s.error         = undefined;
+      s.startedAt     = 0;
+      s.uptimeMs      = 0;
     }
   }
 
