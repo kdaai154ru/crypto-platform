@@ -37,7 +37,7 @@ sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
-// FIX: resubscribe after Valkey reconnect.
+// Resubscribe after Valkey reconnect.
 sub.on('ready', () => {
   log.info('Valkey sub ready, subscribing to norm:* channels');
   sub.subscribe('norm:trades', 'norm:ticker', 'norm:candle', (err: Error | null | undefined) => {
@@ -52,15 +52,27 @@ const chWriter = new ClickHouseTradesWriter(
   env.CH_DATABASE
 );
 
-// FIX #11: zod schema for runtime validation of NormalizedTrade from Redis pub/sub
+/**
+ * Runtime zod schema that mirrors NormalizedTrade exactly.
+ * Must stay in sync with packages/types/src/normalized.ts.
+ *
+ * Fields:
+ *   symbol, exchange, ts, side, price, qty, usdValue — core required fields
+ *   isLarge    — set by normalizer-core to flag whale-size trades
+ *   tradeId    — optional exchange-assigned ID
+ *   sizeLabel  — 'S' | 'M' | 'L' | 'XL' bucketing
+ */
 const NormalizedTradeRuntimeSchema = z.object({
-  symbol:   z.string(),
-  side:     z.enum(['buy', 'sell']),
-  price:    z.number(),
-  amount:   z.number(),
-  usdValue: z.number(),
-  ts:       z.number(),
-  exchange: z.string().optional(),
+  symbol:    z.string(),
+  exchange:  z.string(),           // ExchangeId is a string union — z.string() is compatible
+  ts:        z.number(),
+  side:      z.enum(['buy', 'sell']),
+  price:     z.number(),
+  qty:       z.number(),           // was missing — caused TS2352
+  usdValue:  z.number(),
+  isLarge:   z.boolean(),          // was missing — caused TS2352
+  tradeId:   z.string().optional(),
+  sizeLabel: z.enum(['S', 'M', 'L', 'XL']), // was missing — caused TS2352
 });
 
 const processor = new TradeProcessor(
@@ -92,14 +104,15 @@ sub.on('message', (channel: string, message: string) => {
     messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades', reason: 'parse' });
     return;
   }
-  // FIX #11: validate schema before processing
   const result = NormalizedTradeRuntimeSchema.safeParse(parsed);
   if (!result.success) {
     log.warn({ err: result.error.message }, 'Invalid NormalizedTrade schema, skipping');
     messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades', reason: 'validation' });
     return;
   }
-  const trade = result.data as NormalizedTrade;
+  // z.infer<typeof NormalizedTradeRuntimeSchema> is structurally identical to
+  // NormalizedTrade, so the cast is safe here (exchange is z.string() ⊇ ExchangeId).
+  const trade = result.data as unknown as NormalizedTrade;
   try {
     processor.process(trade);
     const lag = Date.now() - trade.ts;
@@ -117,7 +130,6 @@ async function start(): Promise<void> {
   metricsServer = await createMetricsServer(env.METRICS_PORT);
   log.info({ port: env.METRICS_PORT }, 'Metrics server started');
 
-  // FIX #3: add .catch() to prevent unhandled rejection on transient Valkey errors
   hbTimer = setInterval(() => {
     hb.set('heartbeat:trades-core', Date.now().toString(), 'EX', 30)
       .catch((e: Error) => log.warn({ err: e.message }, 'hb set failed'));
