@@ -17,7 +17,9 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "iovalkey": "catalog:"
+  },
   "devDependencies": {
     "typescript": "^5.7.3",
     "tsx": "^4.21.0",
