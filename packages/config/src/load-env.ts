@@ -1,12 +1,11 @@
 import { config as loadDotenv } from 'dotenv';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import type { AnyZodObject, output } from 'zod';
 
 // Absolute path to the monorepo root — reliable regardless of cwd.
 // packages/config/src/ → up 3 levels → repo root
-const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..', '..', '..');
+const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..');
 
 /**
  * Loads .env from the monorepo root, then validates process.env against
@@ -48,3 +47,4 @@ export function loadEnv<T extends AnyZodObject>(schema: T): output<T> {
 
   return result.data as output<T>;
 }
+
