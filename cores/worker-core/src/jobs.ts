@@ -1,9 +1,9 @@
 // cores/worker-core/src/jobs.ts
 import type Valkey from 'iovalkey';
+import type { Logger } from '@crypto-platform/logger';
 import type { Job } from './scheduler.js';
 
-// FIX #3: вспомогательная функция SCAN вместо KEYS
-// KEYS блокирует Redis на весь скан — при большом числе ключей это заморозка всего
+// SCAN вместо KEYS — не блокирует Redis на весь скан
 async function scanKeys(valkey: Valkey, pattern: string): Promise<string[]> {
   const result: string[] = [];
   let cursor = '0';
@@ -15,7 +15,7 @@ async function scanKeys(valkey: Valkey, pattern: string): Promise<string[]> {
   return result;
 }
 
-export function createJobs(valkey: Valkey): Job[] {
+export function createJobs(valkey: Valkey, log: Logger): Job[] {
   return [
     {
       name: 'screener-refresh',
@@ -42,7 +42,6 @@ export function createJobs(valkey: Valkey): Job[] {
       name: 'stale-key-cleanup',
       intervalMs: 10 * 60 * 1000,
       run: async () => {
-        // FIX #3: SCAN вместо KEYS — не блокирует Redis
         const keys = await scanKeys(valkey, 'heartbeat:*');
         let removed = 0;
         for (const key of keys) {
@@ -52,8 +51,9 @@ export function createJobs(valkey: Valkey): Job[] {
             removed++;
           }
         }
+        // FIX: заменён console.log на pino logger
         if (removed > 0) {
-          console.log(`[stale-cleanup] removed ${removed} stale keys`);
+          log.info({ removed }, 'stale-key-cleanup: removed stale heartbeat keys');
         }
       },
     },
@@ -68,7 +68,6 @@ export function createJobs(valkey: Valkey): Job[] {
       name: 'system-health-snapshot',
       intervalMs: 15_000,
       run: async () => {
-        // FIX #3: SCAN вместо KEYS
         const modules = await scanKeys(valkey, 'heartbeat:*');
         const snapshot = {
           ts: Date.now(),

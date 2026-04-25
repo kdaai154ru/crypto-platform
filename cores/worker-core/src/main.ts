@@ -22,9 +22,9 @@ const hb     = new Valkey(VALKEY_OPTS);
 valkey.on('error', (e: Error) => log.warn({ err: e.message }, 'valkey connection error'));
 hb.on('error',     (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
-// FIX: передаём log в Scheduler вместо console.error/console.log
 const scheduler = new Scheduler(log);
-const jobs = createJobs(valkey);
+// FIX: передаём log в createJobs — убираем последний console.log из проекта
+const jobs = createJobs(valkey, log);
 for (const job of jobs) scheduler.register(job);
 
 const hbInterval = setInterval(
