@@ -5,6 +5,10 @@ export interface TradeBufferOptions {
   maxSize:         number
   flushIntervalMs: number
   onFlush:         (trades: NormalizedTrade[]) => Promise<void>
+  // FIX #4: onFlushError callback replaces console.error.
+  // Caller (main.ts) wires this to log.error + messagesFailedCounter
+  // so flush failures are visible in pino logs and Prometheus metrics.
+  onFlushError?:   (err: unknown, batch: NormalizedTrade[]) => void
 }
 
 export class TradeBuffer {
@@ -14,14 +18,17 @@ export class TradeBuffer {
   private isFlushing = false
 
   constructor(private readonly opts: TradeBufferOptions) {
-    this.timer = setInterval(() => { this.flush().catch(console.error) }, opts.flushIntervalMs)
+    this.timer = setInterval(() => {
+      // FIX #4: route flush errors to onFlushError (pino + metrics) instead of console.error
+      this.flush().catch((e) => this.opts.onFlushError?.(e, []))
+    }, opts.flushIntervalMs)
   }
 
   push(trade: NormalizedTrade): void {
     this.buf.push(trade)
-    // При достижении maxSize инициируем flush асинхронно
     if (this.buf.length >= this.opts.maxSize) {
-      this.flush().catch(console.error)
+      // FIX #4: route flush errors to onFlushError instead of console.error
+      this.flush().catch((e) => this.opts.onFlushError?.(e, []))
     }
   }
 
@@ -34,7 +41,7 @@ export class TradeBuffer {
     try {
       await this.opts.onFlush(batch)
     } catch (e) {
-      console.error(e)
+      this.opts.onFlushError?.(e, batch)
       // Возвращаем батч обратно в буфер чтобы не потерять трейды
       this.buf.unshift(...batch)
     } finally {

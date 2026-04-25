@@ -45,8 +45,18 @@ const throttle = new ThrottleManager();
 // FIX #13: сохраняем ref таймера для clearInterval при shutdown
 let hbTimer: ReturnType<typeof setInterval> | null = null;
 
-sub.subscribe('norm:candle', 'norm:ticker', (e: unknown) => {
-  if (e) log.error(e);
+// FIX #6: resubscribe на norm:candle / norm:ticker при каждом reconnect.
+// iovalkey НЕ восстанавливает pub/sub подписки автоматически после обрыва TCP.
+// Без этого aggregator-core молча перестаёт получать данные после reconnect.
+function setupSubscriptions(): void {
+  sub.subscribe('norm:candle', 'norm:ticker', (e: unknown) => {
+    if (e) log.error(e, 'subscribe error');
+  });
+}
+
+sub.on('ready', () => {
+  log.info('sub reconnected — resubscribing to norm:candle / norm:ticker');
+  setupSubscriptions();
 });
 
 sub.on('message', (ch: string, msg: string) => {
@@ -57,7 +67,9 @@ sub.on('message', (ch: string, msg: string) => {
       snap.setCandle(c);
       const json = JSON.stringify(c);
       // Pub/Sub → storage-core
-      pub.publish('agg:candle', json);
+      // FIX #8: .catch() prevents UnhandledPromiseRejection → process crash on pub reconnect
+      pub.publish('agg:candle', json)
+        .catch((e: Error) => log.warn({ err: e.message }, 'publish agg:candle failed'));
       // Stream → ws-gateway
       str.xadd('agg:candle', 'MAXLEN', '~', String(STREAM_MAXLEN), '*', 'data', json)
         .catch((e: Error) => log.warn({ err: e.message }, 'xadd agg:candle failed'));
@@ -66,7 +78,8 @@ sub.on('message', (ch: string, msg: string) => {
       snap.setTicker(t);
       if (throttle.shouldSend(`ticker:${t.symbol}`, 400)) {
         // Pub/Sub → storage-core
-        pub.publish('agg:ticker', msg);
+        pub.publish('agg:ticker', msg)
+          .catch((e: Error) => log.warn({ err: e.message }, 'publish agg:ticker failed'));
         // Stream → ws-gateway
         str.xadd('agg:ticker', 'MAXLEN', '~', String(STREAM_MAXLEN), '*', 'data', msg)
           .catch((e: Error) => log.warn({ err: e.message }, 'xadd agg:ticker failed'));

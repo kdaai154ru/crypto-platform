@@ -99,8 +99,18 @@ let publishErrors = 0;
 const MAX_PUBLISH_ERRORS = 5;
 let publishDisabled = false;
 
-sub.subscribe('agg:candle', (e: unknown) => {
-  if (e) log.error(e);
+// FIX #7: resubscribe на agg:candle при каждом reconnect.
+// iovalkey НЕ восстанавливает pub/sub подписки автоматически после обрыва TCP.
+// Без этого screener-core молча перестаёт получать данные после reconnect.
+function setupSubscriptions(): void {
+  sub.subscribe('agg:candle', (e: unknown) => {
+    if (e) log.error(e, 'subscribe error');
+  });
+}
+
+sub.on('ready', () => {
+  log.info('sub reconnected — resubscribing to agg:candle');
+  setupSubscriptions();
 });
 
 sub.on('message', (_: string, msg: string) => {
@@ -113,17 +123,21 @@ sub.on('message', (_: string, msg: string) => {
   }
 });
 
+// FIX #14: isPublishing mutex prevents parallel async publish invocations.
+// setInterval with async callback does NOT wait for the previous tick to
+// complete — if Valkey is slow, two publish calls can overlap and produce
+// duplicate screener:update messages.
+let isPublishing = false;
+
 // FIX: save ref so clearInterval can run in shutdown
 const publishInterval = setInterval(async () => {
-  if (publishDisabled) {
-    log.warn('screener publish disabled due to repeated errors, skipping');
-    return;
-  }
-
-  const rows = engine.getRows('rsi');
-  if (!rows.length) return;
+  if (publishDisabled || isPublishing) return;
+  isPublishing = true;
 
   try {
+    const rows = engine.getRows('rsi');
+    if (!rows.length) return;
+
     await pub.publish('screener:update', JSON.stringify(rows));
     if (publishErrors > 0) {
       publishErrors = 0;
@@ -143,6 +157,8 @@ const publishInterval = setInterval(async () => {
         log.info('screener publish circuit breaker CLOSED — retrying');
       }, 60_000);
     }
+  } finally {
+    isPublishing = false;
   }
 }, 30_000);
 

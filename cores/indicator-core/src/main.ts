@@ -25,10 +25,39 @@ sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
-const closesStore = new Map<string, number[]>();
+// FIX #13: closesStore keys are pruned when a symbol:tf stops arriving.
+// Each entry holds max 200 closes (arr.shift() cap). Keys themselves are
+// never deleted on their own — track last-seen timestamp and prune stale
+// entries every 10 minutes to prevent unbounded Map growth with many pairs.
+const closesStore = new Map<string, { arr: number[]; lastSeen: number }>();
 
-sub.subscribe('agg:candle', (e: unknown) => {
-  if (e) log.error(e);
+const PRUNE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes without update → prune
+
+const pruneTimer = setInterval(() => {
+  const now = Date.now();
+  let pruned = 0;
+  for (const [key, entry] of closesStore) {
+    if (now - entry.lastSeen > STALE_THRESHOLD_MS) {
+      closesStore.delete(key);
+      pruned++;
+    }
+  }
+  if (pruned > 0) log.info({ pruned }, 'closesStore: pruned stale entries');
+}, PRUNE_INTERVAL_MS);
+
+// FIX #5: resubscribe на agg:candle при каждом reconnect.
+// iovalkey НЕ восстанавливает pub/sub подписки автоматически после обрыва TCP.
+// Без этого indicator-core молча перестаёт получать данные после reconnect.
+function setupSubscriptions(): void {
+  sub.subscribe('agg:candle', (e: unknown) => {
+    if (e) log.error(e, 'subscribe error');
+  });
+}
+
+sub.on('ready', () => {
+  log.info('sub reconnected — resubscribing to agg:candle');
+  setupSubscriptions();
 });
 
 sub.on('message', (_: string, msg: string) => {
@@ -37,11 +66,16 @@ sub.on('message', (_: string, msg: string) => {
     if (!c.isClosed) return;
 
     const key = `${c.symbol}:${c.tf}`;
-    const arr = closesStore.get(key) ?? [];
-    arr.push(c.close);
-    if (arr.length > 200) arr.shift();
-    closesStore.set(key, arr);
+    let entry = closesStore.get(key);
+    if (!entry) {
+      entry = { arr: [], lastSeen: Date.now() };
+      closesStore.set(key, entry);
+    }
+    entry.lastSeen = Date.now();
+    entry.arr.push(c.close);
+    if (entry.arr.length > 200) entry.arr.shift();
 
+    const arr = entry.arr;
     const rsiVal  = rsi(arr);
     const macdVal = macd(arr);
     const bbVal   = bollinger(arr);
@@ -70,9 +104,10 @@ const hbTimer = setInterval(
   5_000,
 );
 
-// FIX: unified shutdown — clears timer + handles both SIGTERM and SIGINT
+// FIX: unified shutdown — clears all timers + handles both SIGTERM and SIGINT
 const shutdown = () => {
   clearInterval(hbTimer);
+  clearInterval(pruneTimer);
   sub.quit();
   pub.quit();
   hb.quit();
