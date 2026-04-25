@@ -24,6 +24,9 @@ const log = createLogger('trades-core');
 const VALKEY_OPTS = {
   host: env.VALKEY_HOST,
   port: env.VALKEY_PORT,
+  // FIX: pass password so iovalkey sends AUTH on connect.
+  // VALKEY_PASSWORD was missing from ValkeySchema — added in packages/config.
+  ...(env.VALKEY_PASSWORD ? { password: env.VALKEY_PASSWORD } : {}),
   retryStrategy: (times: number) => Math.min(times * 100, 3_000),
   keepAlive: 10_000,
   enableOfflineQueue: true,
@@ -45,8 +48,6 @@ sub.on('ready', () => {
   });
 });
 
-// FIX: pass auth credentials — CLICKHOUSE_USER / CLICKHOUSE_PASSWORD now read
-// correctly after renaming CHSchema fields from CH_* to CLICKHOUSE_*.
 const chWriter = new ClickHouseTradesWriter(
   log,
   env.CLICKHOUSE_HOST,
