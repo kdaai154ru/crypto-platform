@@ -52,10 +52,15 @@ sub.subscribe('sub:request', 'sub:release', 'exchange:ready', (e: unknown) => { 
 sub.on('message', (ch: string, msg: string) => {
   try {
     if (ch === 'sub:request') {
-      const { viewerId, symbol, channels } = JSON.parse(msg);
-      manager.subscribe(viewerId, symbol, channels);
+      const { viewerId, symbol, channels } = JSON.parse(msg) as {
+        viewerId: string;
+        symbol: string;
+        channels?: string[];
+      };
+      // FIX: guard channels undefined — normalise to empty array if missing
+      manager.subscribe(viewerId, symbol, Array.isArray(channels) ? channels : []);
     } else if (ch === 'sub:release') {
-      const { viewerId, symbol } = JSON.parse(msg);
+      const { viewerId, symbol } = JSON.parse(msg) as { viewerId: string; symbol: string };
       manager.unsubscribe(viewerId, symbol);
     } else if (ch === 'exchange:ready') {
       replayToExchange();
