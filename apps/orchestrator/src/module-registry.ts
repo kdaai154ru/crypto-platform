@@ -23,9 +23,12 @@ export const MODULE_IDS = [
   'storage-core',
 ];
 
+// FIX: widen labels type to Partial<Record<string, string | number>> so it is
+// assignable to prom-client Counter<string>.inc — which accepts string | number
+// label values, not only string.
 export interface ModuleRegistryMetrics {
   restartsCounter?: {
-    inc: (labels?: Record<string, string>) => void;
+    inc: (labels?: Partial<Record<string, string | number>>) => void;
   };
 }
 
@@ -57,7 +60,7 @@ export class ModuleRegistry {
     const now = Date.now();
     s.lastHeartbeat = now;
     s.error = error;
-    const newStatus = error ? 'degraded' : 'online';
+    const newStatus: ModuleStatus = error ? 'degraded' : 'online';
 
     if (wasOffline && newStatus === 'online') {
       s.restarts++;
@@ -83,8 +86,6 @@ export class ModuleRegistry {
         } else if (gap > RESTART_TIMEOUT) {
           s.status = 'restarting';
         } else if (gap > HEARTBEAT_TIMEOUT) {
-          // FIX #8: деградируем только если модуль был online
-          // Если heartbeat уже выставил degraded (из-за error в payload) — не перезаписываем
           if (s.status === 'online') {
             s.status = 'degraded';
           }
