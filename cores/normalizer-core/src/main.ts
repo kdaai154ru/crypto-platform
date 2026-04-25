@@ -1,30 +1,21 @@
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
-import Valkey from 'iovalkey';
 import type { ExchangeId, Timeframe } from '@crypto-platform/types';
+import { createValkeyClient } from '@crypto-platform/utils';
 import { normalizeTrade, normalizeTicker, normalizeCandle } from './normalize.js';
 
 const env = loadEnv(BaseSchema.merge(ValkeySchema));
+void env;
 const log = createLogger('normalizer-core');
 
-const VALKEY_OPTS = {
-  host: env.VALKEY_HOST,
-  port: env.VALKEY_PORT,
-  retryStrategy: (times: number) => Math.min(times * 100, 3000),
-  keepAlive: 10000,
-  enableOfflineQueue: true,
-};
-
-const sub = new Valkey(VALKEY_OPTS);
-const pub = new Valkey(VALKEY_OPTS);
-const hb  = new Valkey(VALKEY_OPTS);
+const sub = createValkeyClient();
+const pub = createValkeyClient();
+const hb  = createValkeyClient();
 
 sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error'));
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
-// FIX #11: подписки восстанавливаются при каждом reconnect через событие 'ready'
-// без этого после обрыва TCP Valkey молча перестаёт доставлять сообщения
 function setupSubscriptions(): void {
   sub.subscribe('raw:trades', 'raw:ticker', 'raw:candle', (e: unknown) => {
     if (e) log.error(e, 'subscribe error');
@@ -41,7 +32,6 @@ sub.on('message', (channel: string, msg: string) => {
     const data = JSON.parse(msg);
     if (channel === 'raw:trades') {
       const t = normalizeTrade(data, data.exchange as ExchangeId);
-      // FIX #2: .catch() prevents UnhandledPromiseRejection → process crash on pub reconnect
       if (t) pub.publish('norm:trades', JSON.stringify(t))
         .catch((e: Error) => log.error({ err: e.message }, 'publish norm:trades failed'));
     } else if (channel === 'raw:ticker') {
@@ -56,7 +46,6 @@ sub.on('message', (channel: string, msg: string) => {
   } catch (e) { log.error(e, 'normalize error'); }
 });
 
-// FIX #12: сохраняем ref таймера — без него clearInterval в shutdown невозможен
 const hbTimer = setInterval(
   () => hb.set('heartbeat:normalizer-core', Date.now().toString(), 'EX', 30),
   5_000,

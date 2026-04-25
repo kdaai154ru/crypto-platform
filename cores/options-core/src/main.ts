@@ -1,22 +1,15 @@
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
-import Valkey from 'iovalkey';
+import { createValkeyClient } from '@crypto-platform/utils';
 import { DeribitFetcher } from './deribit-fetcher.js';
 import { computeOptionsAnalytics } from './analytics.js';
 
 const env = loadEnv(BaseSchema.merge(ValkeySchema));
+void env;
 const log = createLogger('options-core');
 
-const VALKEY_OPTS = {
-  host: env.VALKEY_HOST,
-  port: env.VALKEY_PORT,
-  retryStrategy: (times: number) => Math.min(times * 100, 3000),
-  keepAlive: 10000,
-  enableOfflineQueue: true,
-};
-
-const pub = new Valkey(VALKEY_OPTS);
-const hb  = new Valkey(VALKEY_OPTS);
+const pub = createValkeyClient();
+const hb  = createValkeyClient();
 
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
@@ -36,9 +29,21 @@ async function loop(): Promise<void> {
   await Promise.all([refresh('BTC'), refresh('ETH')]);
 }
 
+const hbTimer = setInterval(
+  () => hb.set('heartbeat:options-core', Date.now().toString(), 'EX', 30),
+  5_000,
+);
+
+const shutdown = () => {
+  clearInterval(hbTimer);
+  pub.quit();
+  hb.quit();
+  process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT',  shutdown);
+
 loop();
 setInterval(loop, 5 * 60 * 1000);
-setInterval(() => hb.set('heartbeat:options-core', Date.now().toString(), 'EX', 30), 5_000);
-
-process.on('SIGTERM', () => { pub.quit(); hb.quit(); process.exit(0); });
 log.info('options-core started');
