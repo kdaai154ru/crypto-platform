@@ -15,6 +15,7 @@ import {
   type MetricsServer,
 } from '@crypto-platform/metrics';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { isIPv6 } from 'node:net';
 
 void wsSubscriptionsTotal;
 
@@ -92,10 +93,43 @@ function getClientIp(ws: uWS.WebSocket<unknown>): string {
   }
 }
 
+/**
+ * FIX #4: normalizeIp — корректная обработка IPv6 для rate-limiting.
+ *
+ * Проблема старого кода:
+ *   raw.split(':').slice(0, 4).join(':') не учитывает compressed '::' нотацию.
+ *   '2001:db8::1'.split(':') → ['2001','db8','','1'] — неверный ключ.
+ *
+ * Решение:
+ *   - IPv4-mapped IPv6 (::ffff:x.x.x.x) → берём IPv4-часть.
+ *   - Чистый IPv6 → используем node:net.isIPv6 для валидации;
+ *     для rate-limit берём первые 4 hex-группы из развёрнутого адреса (/64 subnet).
+ *   - IPv4 → возвращаем как есть.
+ */
+function expandIPv6(addr: string): string {
+  // Развернуть :: в полный 8-группный адрес
+  const halves = addr.split('::');
+  if (halves.length === 2) {
+    const left = halves[0] ? halves[0].split(':') : [];
+    const right = halves[1] ? halves[1].split(':') : [];
+    const missing = 8 - left.length - right.length;
+    const middle = Array(missing).fill('0000');
+    return [...left, ...middle, ...right]
+      .map((g) => g.padStart(4, '0'))
+      .join(':');
+  }
+  return addr.split(':').map((g) => g.padStart(4, '0')).join(':');
+}
+
 function normalizeIp(raw: string): string {
   if (raw === 'unknown') return raw;
+  // IPv4-mapped IPv6
   if (raw.startsWith('::ffff:')) return raw.slice(7);
-  if (raw.includes(':')) return raw.split(':').slice(0, 4).join(':');
+  if (isIPv6(raw)) {
+    // Берём первые 4 группы (64-bit prefix) как ключ для rate-limit
+    const expanded = expandIPv6(raw);
+    return expanded.split(':').slice(0, 4).join(':');
+  }
   return raw;
 }
 

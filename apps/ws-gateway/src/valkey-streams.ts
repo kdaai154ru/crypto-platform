@@ -48,6 +48,8 @@ export class ValkeyStreams {
   private isRunning = true;
   private logger: Logger;
   private reclaimTimer: ReturnType<typeof setInterval> | null = null;
+  // FIX #1: guard против двойного запуска pollLoop при reconnect Valkey
+  private isPolling = false;
 
   constructor(
     valkeyOpts: { host: string; port: number; retryStrategy?: (times: number) => number },
@@ -64,11 +66,26 @@ export class ValkeyStreams {
     this.subscriber.on('ready', async () => {
       this.logger.info('Valkey subscriber ready, setting up consumer groups');
       try {
+        // FIX #2: при reconnect очищаем старый reclaimTimer чтобы не было утечки
+        if (this.reclaimTimer) {
+          clearInterval(this.reclaimTimer);
+          this.reclaimTimer = null;
+        }
+
         await this.initializeConsumerGroups();
         await this.processPendingMessages();
+
         if (this.isRunning) {
           this.startReclaimTimer();
-          this.pollLoop();
+          // FIX #1: запускаем pollLoop только если он уже не запущен
+          if (!this.isPolling) {
+            this.isPolling = true;
+            this.pollLoop().finally(() => {
+              this.isPolling = false;
+            });
+          } else {
+            this.logger.warn('pollLoop already running, skipping duplicate start after reconnect');
+          }
         }
       } catch (err) {
         this.logger.error({ err }, 'Failed to initialize streams');
@@ -116,10 +133,9 @@ export class ValkeyStreams {
   }
 
   /**
-   * FIX: XAUTOCLAIM — забрать сообщения, которые висят в PEL дольше
-   * PEL_CLAIM_IDLE_MS без XACK (т.е. consumer упал или завис).
-   * Если сообщение доставлено > MAX_DELIVERY_COUNT раз — dead-letter:
-   * пишем warn-лог и XACK без обработки.
+   * FIX #3: XPENDING батчем вместо N+1 запросов.
+   * Один XPENDING на весь stream за итерацию reclaimStalePending.
+   * Строим Map<msgId, deliveryCount> из результата и проверяем по нему.
    */
   private async reclaimStalePending(): Promise<void> {
     for (const stream of STREAM_KEYS) {
@@ -138,16 +154,21 @@ export class ValkeyStreams {
         if (!result || !Array.isArray(result[1]) || result[1].length === 0) continue;
 
         const messages = result[1];
+
+        // FIX #3: один XPENDING на весь batch вместо N отдельных запросов
+        const pendingList = await this.subscriber.xpending(
+          stream, CONSUMER_GROUP, '-', '+', messages.length
+        ) as Array<[string, string, number, number]>;
+
+        const deliveryMap = new Map<string, number>(
+          pendingList.map((p) => [p[0], p[3]])
+        );
+
         const deadLetterIds: string[] = [];
         const retryMessages: Array<[string, string[]]> = [];
 
-        // Проверяем delivery count через XPENDING
         for (const [msgId, fields] of messages) {
-          const pending = await this.subscriber.xpending(
-            stream, CONSUMER_GROUP, msgId, msgId, 1
-          ) as Array<[string, string, number, number]>;
-
-          const deliveryCount = pending?.[0]?.[3] ?? 0;
+          const deliveryCount = deliveryMap.get(msgId) ?? 0;
           if (deliveryCount > MAX_DELIVERY_COUNT) {
             this.logger.warn(
               { stream, msgId, deliveryCount },

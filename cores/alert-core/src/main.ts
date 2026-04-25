@@ -83,18 +83,17 @@ async function start(): Promise<void> {
   await loadRules();
   await evaluator.loadPrevValues();
 
-  await new Promise<void>((resolve, reject) => {
-    sub.subscribe('alert:rules:updated', (e) => {
-      if (e) reject(e); else resolve();
-    });
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    sub.psubscribe('indicator:*', (e) => {
-      if (e) reject(e); else resolve();
-    });
-  });
-
+  // FIX #5: регистрируем обработчики сообщений ДО вызова subscribe/psubscribe.
+  //
+  // Проблема оригинального кода:
+  //   1. await subscribe('alert:rules:updated')   ← Valkey подтверждает подписку
+  //   2. await psubscribe('indicator:*')          ← ~1-5ms gap
+  //   3. sub.on('message', ...)                   ← обработчик регистрируется ПОСЛЕ
+  //
+  // В окне между шагом 1 и шагом 3 входящие сообщения 'alert:rules:updated'
+  // теряются: Valkey их доставит, но EventEmitter ещё не имеет слушателя.
+  //
+  // Решение: on('message') и on('pmessage') — ДО subscribe/psubscribe.
   sub.on('message', (ch: string) => {
     if (ch === 'alert:rules:updated') {
       loadRules().catch((e) => log.error(e, 'reload rules failed'));
@@ -122,6 +121,18 @@ async function start(): Promise<void> {
     if (events.length > 0) {
       publishAlertEvents(events).catch((e: unknown) => log.error(e, 'publishAlertEvents failed'));
     }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    sub.subscribe('alert:rules:updated', (e) => {
+      if (e) reject(e); else resolve();
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    sub.psubscribe('indicator:*', (e) => {
+      if (e) reject(e); else resolve();
+    });
   });
 
   hbTimer = setInterval(async () => {
