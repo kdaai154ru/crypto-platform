@@ -29,7 +29,6 @@ const env = loadEnv(
 );
 const log = createLogger('ws-gateway');
 
-// FIX: JWT_SECRET is required in production — fail fast at startup
 if (!env.JWT_SECRET && env.NODE_ENV === 'production') {
   log.fatal('JWT_SECRET is required in production. Set it via environment variable.');
   process.exit(1);
@@ -38,7 +37,6 @@ if (!env.JWT_SECRET) {
   log.warn('JWT_SECRET not set - WebSocket authentication disabled (development only)');
 }
 
-// Origin validation — CSWSH protection
 const allowedOrigins: Set<string> | null = env.WS_ALLOWED_ORIGINS
   ? new Set(env.WS_ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean))
   : null;
@@ -94,8 +92,12 @@ function getClientIp(ws: uWS.WebSocket<unknown>): string {
 
 function normalizeIp(raw: string): string {
   if (raw === 'unknown') return raw;
+  // Strip IPv4-mapped prefix
   if (raw.startsWith('::ffff:')) return raw.slice(7);
-  if (raw.includes(':')) return raw.split(':').slice(0, 4).join(':');
+  // FIX: IPv6 rate-limit key uses /64 subnet (first 4 groups + '::/64' suffix).
+  // Previously we just joined first 4 groups without a suffix, causing ambiguous
+  // keys and potential collisions between different /64 blocks.
+  if (raw.includes(':')) return raw.split(':').slice(0, 4).join(':') + '::/64';
   return raw;
 }
 
@@ -131,7 +133,6 @@ function verifyJwt(token: string, secret: string, expectedIssuer: string): { sub
     if (typeof payload.exp === 'number' && Date.now() / 1000 > payload.exp) return null;
     if (typeof payload.nbf === 'number' && Date.now() / 1000 < payload.nbf) return null;
     if (payload.iss !== undefined && payload.iss !== expectedIssuer) return null;
-    // FIX: validate aud if present — reject tokens issued for other services
     if (payload.aud !== undefined && payload.aud !== 'ws-gateway') return null;
     if (!payload.sub || typeof payload.sub !== 'string') return null;
     return { sub: payload.sub };
@@ -223,6 +224,13 @@ const app = uWS.App().ws('/*', {
       }
 
       if (data.type === 'subscribe') {
+        // FIX: validate symbol before passing to subscribe—undefined symbol creates
+        // an invalid 'undefined' key in Valkey sub:request and a TypeError inside
+        // SubscriptionHandler when building the channel key.
+        if (!data.symbol || typeof data.symbol !== 'string') {
+          ws.send(JSON.stringify({ type: 'error', message: 'subscribe requires a valid symbol string' }));
+          return;
+        }
         subHdlr.subscribe(id, data.channels ?? [], data.symbol);
       } else if (data.type === 'unsubscribe') {
         subHdlr.unsubscribe(id, data.channels ?? [], data.symbol);
@@ -267,7 +275,6 @@ async function start(): Promise<void> {
     log.info('Shutting down ws-gateway...');
     clearInterval(cleanupInterval);
     await fanout.close();
-    // FIX: await quit() so Valkey buffers are flushed before process exits
     await valkeyPub.quit();
     await metricsServer!.close();
     process.exit(0);
