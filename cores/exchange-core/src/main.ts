@@ -1,7 +1,7 @@
 // cores/exchange-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
-import { Valkey } from 'iovalkey';
+import Valkey from 'iovalkey';
 import { z } from 'zod';
 import { ExchangeConnector } from './connector.js';
 import type { ExchangeId, Timeframe } from '@crypto-platform/types';
@@ -30,8 +30,6 @@ const VALKEY_OPTS = {
   enableOfflineQueue: true,
 };
 
-// Named import { Valkey } — iovalkey does not expose a default-export
-// constructor under NodeNext ESM (no construct signatures on the default).
 const valkey = new Valkey(VALKEY_OPTS);
 const sub    = new Valkey(VALKEY_OPTS);
 const hb     = new Valkey(VALKEY_OPTS);
@@ -112,7 +110,7 @@ async function start(): Promise<void> {
   }
 
   await new Promise<void>((resolve, reject) => {
-    sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e) => {
+    sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e: Error | null) => {
       if (e) { log.error({ err: e }, 'sub.subscribe failed'); reject(e); }
       else resolve();
     });
