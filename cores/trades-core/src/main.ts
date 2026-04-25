@@ -45,34 +45,32 @@ sub.on('ready', () => {
   });
 });
 
+// FIX: pass auth credentials — CLICKHOUSE_USER / CLICKHOUSE_PASSWORD now read
+// correctly after renaming CHSchema fields from CH_* to CLICKHOUSE_*.
 const chWriter = new ClickHouseTradesWriter(
   log,
-  env.CH_HOST,
-  env.CH_PORT,
-  env.CH_DATABASE
+  env.CLICKHOUSE_HOST,
+  env.CLICKHOUSE_PORT,
+  env.CLICKHOUSE_DB,
+  env.CLICKHOUSE_USER,
+  env.CLICKHOUSE_PASSWORD,
 );
 
 /**
  * Runtime zod schema that mirrors NormalizedTrade exactly.
  * Must stay in sync with packages/types/src/normalized.ts.
- *
- * Fields:
- *   symbol, exchange, ts, side, price, qty, usdValue — core required fields
- *   isLarge    — set by normalizer-core to flag whale-size trades
- *   tradeId    — optional exchange-assigned ID
- *   sizeLabel  — 'S' | 'M' | 'L' | 'XL' bucketing
  */
 const NormalizedTradeRuntimeSchema = z.object({
   symbol:    z.string(),
-  exchange:  z.string(),           // ExchangeId is a string union — z.string() is compatible
+  exchange:  z.string(),
   ts:        z.number(),
   side:      z.enum(['buy', 'sell']),
   price:     z.number(),
-  qty:       z.number(),           // was missing — caused TS2352
+  qty:       z.number(),
   usdValue:  z.number(),
-  isLarge:   z.boolean(),          // was missing — caused TS2352
+  isLarge:   z.boolean(),
   tradeId:   z.string().optional(),
-  sizeLabel: z.enum(['S', 'M', 'L', 'XL']), // was missing — caused TS2352
+  sizeLabel: z.enum(['S', 'M', 'L', 'XL']),
 });
 
 const processor = new TradeProcessor(
@@ -110,8 +108,6 @@ sub.on('message', (channel: string, message: string) => {
     messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades', reason: 'validation' });
     return;
   }
-  // z.infer<typeof NormalizedTradeRuntimeSchema> is structurally identical to
-  // NormalizedTrade, so the cast is safe here (exchange is z.string() ⊇ ExchangeId).
   const trade = result.data as unknown as NormalizedTrade;
   try {
     processor.process(trade);
