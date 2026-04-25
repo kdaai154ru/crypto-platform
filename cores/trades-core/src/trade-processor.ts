@@ -6,10 +6,13 @@ export interface DeltaResult { buyVol:number; sellVol:number; delta:number; symb
 
 // FIX: ограничение размера re-буфера — при длительном сбое ClickHouse буфер растёт без границ → OOM
 const MAX_BUFFER_SIZE = 50_000;
+// FIX #4: stale threshold — записи deltaMap старше этого интервала удаляются
+const DELTA_STALE_MS = 5 * 60_000; // 5 minutes
 
 export class TradeProcessor {
   private buffer: NormalizedTrade[] = []
   private flushTimer?: ReturnType<typeof setInterval>
+  private cleanupTimer?: ReturnType<typeof setInterval>
   private deltaMap = new Map<string, { buy:number; sell:number; ts:number }>()
 
   constructor(
@@ -19,6 +22,23 @@ export class TradeProcessor {
     flushIntervalMs = 2_000
   ) {
     this.flushTimer = setInterval(() => this.flush(), flushIntervalMs)
+    // FIX #4: periodic cleanup of stale deltaMap entries to prevent memory leak
+    this.cleanupTimer = setInterval(() => this.pruneDeltaMap(), 60_000)
+  }
+
+  // FIX #4: remove deltaMap entries that haven't been updated for DELTA_STALE_MS
+  private pruneDeltaMap(): void {
+    const now = Date.now()
+    let pruned = 0
+    for (const [symbol, d] of this.deltaMap) {
+      if (now - d.ts > DELTA_STALE_MS) {
+        this.deltaMap.delete(symbol)
+        pruned++
+      }
+    }
+    if (pruned > 0) {
+      this.log.debug({ pruned }, 'deltaMap: pruned stale symbols')
+    }
   }
 
   process(trade: NormalizedTrade): void {
@@ -32,15 +52,12 @@ export class TradeProcessor {
     else d.sell += trade.usdValue
     if (Date.now() - d.ts >= 500) {
       this.onDelta({ symbol:trade.symbol, buyVol:d.buy, sellVol:d.sell, delta:d.buy-d.sell })
-      // FIX: reset accumulators after each emit so each 500 ms window
-      // contains only the volume traded in that window, not cumulative.
       d.buy = 0
       d.sell = 0
       d.ts = Date.now()
     }
   }
 
-  // FIX: flush() теперь public — вызывается в main.ts при SIGTERM для graceful drain буфера
   async flush(): Promise<void> {
     if (!this.buffer.length) return
     const batch = this.buffer.splice(0)
@@ -48,7 +65,6 @@ export class TradeProcessor {
       await this.onFlush(batch)
     } catch (e) {
       this.log.error(e, 'flush error, re-buffering')
-      // FIX: если буфер уже переполнен — дропаем батч, чтобы не допустить OOM
       if (this.buffer.length < MAX_BUFFER_SIZE) {
         this.buffer.unshift(...batch)
       } else {
@@ -60,5 +76,10 @@ export class TradeProcessor {
     }
   }
 
-  destroy(): void { clearInterval(this.flushTimer) }
+  destroy(): void {
+    clearInterval(this.flushTimer)
+    // FIX #4: clear cleanup timer and deltaMap on shutdown
+    clearInterval(this.cleanupTimer)
+    this.deltaMap.clear()
+  }
 }

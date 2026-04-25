@@ -43,8 +43,22 @@ const exList: ExchangeId[] =
   ?? DEFAULT_EXCHANGES;
 
 const connectors = new Map<ExchangeId, ExchangeConnector>();
-
 const activeSymbols = new Set<string>();
+
+// FIX #12: zod schemas for stream control messages
+const StreamStartSchema = z.object({
+  symbol: z.string().min(1),
+  channels: z.array(z.string()).default([]),
+});
+const StreamStopSchema = z.object({
+  symbol: z.string().min(1),
+});
+const StreamReplaySchema = z.object({
+  pairs: z.array(z.object({
+    symbol: z.string().min(1),
+    channels: z.array(z.string()).default([]),
+  })).default([]),
+});
 
 function handleStreamStart(symbol: string, channels: string[]): void {
   const chs: string[] = channels ?? [];
@@ -88,6 +102,15 @@ function handleStreamStart(symbol: string, channels: string[]): void {
 let metricsServer: MetricsServer | null = null;
 let hbTimer: ReturnType<typeof setInterval> | null = null;
 
+// FIX #8: resubscribe on Valkey reconnect — iovalkey does NOT restore
+// pub/sub subscriptions automatically after reconnect.
+function subscribeControlChannels(): void {
+  sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e: Error | null) => {
+    if (e) log.error({ err: e }, 'sub.subscribe failed');
+    else log.info('exchange-core subscribed to control channels');
+  });
+}
+
 async function start(): Promise<void> {
   metricsServer = await createMetricsServer(env.METRICS_PORT);
   log.info({ port: env.METRICS_PORT }, 'Metrics server started');
@@ -109,6 +132,55 @@ async function start(): Promise<void> {
     }
   }
 
+  // FIX #2: register message handler BEFORE subscribing and publishing exchange:ready
+  // to avoid race condition where stream:start arrives before the handler is registered.
+  sub.on('message', (ch: string, msg: string) => {
+    try {
+      if (ch === 'stream:start') {
+        // FIX #12: validate with zod before use
+        const result = StreamStartSchema.safeParse(JSON.parse(msg));
+        if (!result.success) {
+          log.warn({ err: result.error.message }, 'stream:start invalid payload, ignoring');
+          return;
+        }
+        handleStreamStart(result.data.symbol, result.data.channels);
+
+      } else if (ch === 'stream:replay') {
+        const result = StreamReplaySchema.safeParse(JSON.parse(msg));
+        if (!result.success) {
+          log.warn({ err: result.error.message }, 'stream:replay invalid payload, ignoring');
+          return;
+        }
+        log.info({ count: result.data.pairs.length }, 'replaying streams after reconnect');
+        for (const { symbol, channels } of result.data.pairs) {
+          if (activeSymbols.has(symbol)) {
+            log.debug({ symbol }, 'stream:replay skipped — already active');
+            continue;
+          }
+          handleStreamStart(symbol, channels);
+        }
+
+      } else if (ch === 'stream:stop') {
+        const result = StreamStopSchema.safeParse(JSON.parse(msg));
+        if (!result.success) {
+          log.warn({ err: result.error.message }, 'stream:stop invalid payload, ignoring');
+          return;
+        }
+        for (const [, conn] of connectors) conn.stopSymbol(result.data.symbol);
+        activeSymbols.delete(result.data.symbol);
+        log.info({ symbol: result.data.symbol }, 'streams stopped');
+      }
+    } catch (e) {
+      log.error(e);
+    }
+  });
+
+  // FIX #8: resubscribe on reconnect
+  sub.on('ready', () => {
+    log.info('Valkey sub ready, resubscribing to control channels');
+    subscribeControlChannels();
+  });
+
   await new Promise<void>((resolve, reject) => {
     sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e: Error | null) => {
       if (e) { log.error({ err: e }, 'sub.subscribe failed'); reject(e); }
@@ -116,45 +188,13 @@ async function start(): Promise<void> {
     });
   });
 
-  sub.on('message', (ch: string, msg: string) => {
-    try {
-      const parsed = JSON.parse(msg) as {
-        symbol: string;
-        channels: string[];
-        pairs?: Array<{ symbol: string; channels: string[] }>;
-      };
-
-      if (ch === 'stream:start') {
-        handleStreamStart(parsed.symbol, parsed.channels);
-      } else if (ch === 'stream:replay') {
-        const pairs = parsed.pairs ?? [];
-        log.info({ count: pairs.length }, 'replaying streams after reconnect');
-        for (const { symbol, channels } of pairs) {
-          if (activeSymbols.has(symbol)) {
-            log.debug({ symbol }, 'stream:replay skipped — already active');
-            continue;
-          }
-          handleStreamStart(symbol, channels);
-        }
-      } else if (ch === 'stream:stop') {
-        if (!parsed.symbol) {
-          log.warn('stream:stop received without symbol — ignoring');
-          return;
-        }
-        for (const [, conn] of connectors) conn.stopSymbol(parsed.symbol);
-        activeSymbols.delete(parsed.symbol);
-        log.info({ symbol: parsed.symbol }, 'streams stopped');
-      }
-    } catch (e) {
-      log.error(e);
-    }
-  });
-
+  // FIX #2: publish exchange:ready AFTER message handler and subscriptions are set up
   log.info('publishing exchange:ready');
   await valkey.publish('exchange:ready', JSON.stringify({ exchanges: exList }));
 
-  hbTimer = setInterval(async () => {
-    await hb.set('heartbeat:exchange-core', Date.now().toString(), 'EX', 30);
+  hbTimer = setInterval(() => {
+    hb.set('heartbeat:exchange-core', Date.now().toString(), 'EX', 30)
+      .catch((e: Error) => log.warn({ err: e.message }, 'hb set failed'));
     const states = [...connectors.entries()].map(([id, conn]) => {
       exchangeLatencyHistogram.observe({ exchange: id, method: 'ws' }, conn.latencyMs);
       return {
@@ -166,16 +206,16 @@ async function start(): Promise<void> {
         streamCount: conn.streamCount(),
       };
     });
-    await hb.set('system:status:exchanges', JSON.stringify(states), 'EX', 30);
+    hb.set('system:status:exchanges', JSON.stringify(states), 'EX', 30)
+      .catch((e: Error) => log.warn({ err: e.message }, 'hb status set failed'));
   }, 5_000);
 
   const shutdown = async () => {
     log.info('Shutting down exchange-core...');
     if (hbTimer) clearInterval(hbTimer);
     connectors.forEach((c) => c.stopAll());
-    valkey.quit();
-    sub.quit();
-    hb.quit();
+    // FIX #1: await quit() so buffered publish commands are flushed before exit
+    await Promise.allSettled([valkey.quit(), sub.quit(), hb.quit()]);
     if (metricsServer) await metricsServer.close();
     process.exit(0);
   };

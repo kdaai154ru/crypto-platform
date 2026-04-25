@@ -4,6 +4,8 @@ import type { WebSocket } from 'uWebSockets.js'
 export const UWS_SEND_BACKPRESSURE = 0
 export const UWS_SEND_DROPPED = 2
 export const MAX_SUBSCRIPTIONS_PER_CLIENT = 50
+// FIX #13: debounce threshold for updatePing — avoid Map.set() on every message
+const PING_DEBOUNCE_MS = 1000
 
 export interface WsClient {
   id: string
@@ -42,10 +44,6 @@ export class ConnectionManager {
     return this.clients.size
   }
 
-  /**
-   * Добавляет подписку клиенту.
-   * @returns true если подписка добавлена, false если превышен лимит
-   */
   addSubscription(id: string, channel: string): boolean {
     const client = this.clients.get(id)
     if (!client) return false
@@ -65,26 +63,21 @@ export class ConnectionManager {
   }
 
   /**
-   * Обновляет время последнего ping для клиента.
+   * FIX #13: debounced updatePing — skips Map.set() if called within PING_DEBOUNCE_MS.
+   * Prevents 100k+ Map writes/sec at high message throughput (1000 clients × 100 msg/s).
    */
   updatePing(id: string): void {
     const client = this.clients.get(id)
-    if (client) {
+    if (client && Date.now() - client.lastPing > PING_DEBOUNCE_MS) {
       client.lastPing = Date.now()
     }
   }
 
-  /**
-   * Возвращает клиентов, у которых lastPing старше maxAgeMs.
-   */
   getStale(maxAgeMs: number): WsClient[] {
     const threshold = Date.now() - maxAgeMs
     return this.all().filter(c => c.lastPing < threshold)
   }
 
-  /**
-   * Возвращает количество подписок клиента.
-   */
   subscriptionCount(id: string): number {
     return this.clients.get(id)?.subscriptions.size ?? 0
   }

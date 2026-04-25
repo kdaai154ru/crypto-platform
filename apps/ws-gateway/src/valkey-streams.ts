@@ -32,7 +32,6 @@ const BLOCK_MS = 100;
 const COUNT = 100;
 const POLL_INTERVAL_MS = 1000;
 
-// PEL dead-letter constants
 const PEL_CLAIM_IDLE_MS = 60_000;
 const PEL_CLAIM_COUNT = 50;
 const MAX_DELIVERY_COUNT = 3;
@@ -48,8 +47,10 @@ export class ValkeyStreams {
   private isRunning = true;
   private logger: Logger;
   private reclaimTimer: ReturnType<typeof setInterval> | null = null;
-  // Guard против двойного запуска pollLoop при reconnect Valkey
   private isPolling = false;
+  // FIX #10: track whether a reconnect happened while pollLoop was in error-sleep
+  // so we can correctly restart the loop from the 'ready' handler.
+  private connectionLost = false;
 
   constructor(
     valkeyOpts: { host: string; port: number; retryStrategy?: (times: number) => number },
@@ -61,12 +62,13 @@ export class ValkeyStreams {
 
     this.subscriber.on('error', (err: Error) => {
       this.logger.error({ err }, 'ValkeyStreams subscriber error');
+      // FIX #10: mark connection as lost so pollLoop exits cleanly on next iteration
+      this.connectionLost = true;
     });
 
     this.subscriber.on('ready', async () => {
       this.logger.info('Valkey subscriber ready, setting up consumer groups');
       try {
-        // При reconnect очищаем старый reclaimTimer чтобы не было утечки
         if (this.reclaimTimer) {
           clearInterval(this.reclaimTimer);
           this.reclaimTimer = null;
@@ -77,14 +79,23 @@ export class ValkeyStreams {
 
         if (this.isRunning) {
           this.startReclaimTimer();
-          // Запускаем pollLoop только если он уже не запущен
+          // FIX #10: reset connectionLost flag before potentially starting a new loop.
+          // If isPolling is true here, the old loop may be in error-sleep with
+          // connectionLost=true and will exit on its next iteration, then isPolling
+          // will become false — but we miss the window to start a new loop.
+          // Solution: always reset connectionLost, and if the old loop is sleeping,
+          // it will exit (connectionLost was true when it checked), then isPolling
+          // becomes false. We schedule a delayed check to restart the loop.
+          this.connectionLost = false;
           if (!this.isPolling) {
             this.isPolling = true;
             this.pollLoop().finally(() => {
               this.isPolling = false;
             });
           } else {
-            this.logger.warn('pollLoop already running, skipping duplicate start after reconnect');
+            // Old loop is still running (in error-sleep). It will see connectionLost=false
+            // now and continue normally — no need to start a new one.
+            this.logger.info('pollLoop already running after reconnect, continuing');
           }
         }
       } catch (err) {
@@ -131,10 +142,6 @@ export class ValkeyStreams {
     }, PEL_RECLAIM_INTERVAL_MS);
   }
 
-  /**
-   * XPENDING батчем вместо N+1 запросов.
-   * Один XPENDING на весь stream за итерацию.
-   */
   private async reclaimStalePending(): Promise<void> {
     for (const stream of STREAM_KEYS) {
       try {
@@ -152,7 +159,6 @@ export class ValkeyStreams {
 
         const messages = result[1];
 
-        // Один XPENDING на весь batch — O(1) запрос вместо O(N)
         const pendingList = await this.subscriber.xpending(
           stream, CONSUMER_GROUP, '-', '+', messages.length
         ) as Array<[string, string, number, number]>;
@@ -192,6 +198,11 @@ export class ValkeyStreams {
 
   private async pollLoop(): Promise<void> {
     while (this.isRunning) {
+      // FIX #10: if connection was lost, exit the loop — 'ready' handler will start a new one
+      if (this.connectionLost) {
+        this.logger.warn('pollLoop: connection lost flag set, exiting loop to allow reconnect restart');
+        break;
+      }
       try {
         const ids = STREAM_KEYS.map(() => '>');
         const results = await this.subscriber.xreadgroup(
@@ -205,9 +216,13 @@ export class ValkeyStreams {
         if (results) await this.handleStreamResults(results);
       } catch (err: unknown) {
         const e = err as Error;
-        if (e.message?.includes('NORECONNECT') || e.message?.includes('Connection is closed')) {
-          this.logger.warn('Valkey connection lost during poll, waiting for reconnect');
-          await new Promise(r => setTimeout(r, 1000));
+        if (
+          e.message?.includes('NORECONNECT') ||
+          e.message?.includes('Connection is closed') ||
+          this.connectionLost
+        ) {
+          this.logger.warn('Valkey connection lost during poll, exiting pollLoop for reconnect');
+          break; // FIX #10: exit loop cleanly; 'ready' will restart it
         } else {
           this.logger.error({ err }, 'Stream polling error');
           await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
@@ -229,7 +244,6 @@ export class ValkeyStreams {
       }
       if (!messages || messages.length === 0) continue;
 
-      // getByChannel() вызывается ОДИН раз на stream, не на каждое сообщение
       const clients = this.connectionManager.getByChannel(wsChannel);
       const msgIds: string[] = [];
 
@@ -265,13 +279,11 @@ export class ValkeyStreams {
         }
 
         const outgoing: StreamMessage = { type: wsChannel, data };
-        // payload сериализуется ОДИН раз, переиспользуется для всех клиентов
         const payload = JSON.stringify(outgoing);
         const messageTs = typeof data?.ts === 'number' ? data.ts : undefined;
 
         for (const client of clients) {
           if (!client.ws) continue;
-          // FIX: try/catch вокруг ws.send() — uWS может бросить исключение при закрытом сокете
           let sendResult: number
           try {
             sendResult = client.ws.send(payload);

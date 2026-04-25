@@ -37,9 +37,7 @@ sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
-// FIX(audit): resubscribe after Valkey reconnect.
-// iovalkey does NOT auto-restore pub/sub on reconnect — explicit re-subscribe required.
-// FIX: callback type must be (err: Error | null | undefined) to match iovalkey Callback<unknown>
+// FIX: resubscribe after Valkey reconnect.
 sub.on('ready', () => {
   log.info('Valkey sub ready, subscribing to norm:* channels');
   sub.subscribe('norm:trades', 'norm:ticker', 'norm:candle', (err: Error | null | undefined) => {
@@ -47,7 +45,6 @@ sub.on('ready', () => {
   });
 });
 
-// FIX: use CH_HOST / CH_PORT / CH_DATABASE — the actual field names in CHSchema
 const chWriter = new ClickHouseTradesWriter(
   log,
   env.CH_HOST,
@@ -55,17 +52,27 @@ const chWriter = new ClickHouseTradesWriter(
   env.CH_DATABASE
 );
 
+// FIX #11: zod schema for runtime validation of NormalizedTrade from Redis pub/sub
+const NormalizedTradeRuntimeSchema = z.object({
+  symbol:   z.string(),
+  side:     z.enum(['buy', 'sell']),
+  price:    z.number(),
+  amount:   z.number(),
+  usdValue: z.number(),
+  ts:       z.number(),
+  exchange: z.string().optional(),
+});
+
 const processor = new TradeProcessor(
   log,
   async (batch) => {
     try {
       await chWriter.writeBatch(batch);
-      // FIX: label key must be 'core', not 'service' (matches createCounter declaration)
       messagesProcessedCounter.inc({ core: 'trades-core', channel: 'norm:trades' }, batch.length);
     } catch (e) {
       messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades', reason: 'ch_write' }, batch.length);
       log.error({ err: e, count: batch.length }, 'ClickHouse write failed');
-      throw e; // re-throw so TradeProcessor re-buffers
+      throw e;
     }
   },
   (delta) => {
@@ -77,15 +84,29 @@ const processor = new TradeProcessor(
 
 sub.on('message', (channel: string, message: string) => {
   if (channel !== 'norm:trades') return;
+  let parsed: unknown;
   try {
-    const trade = JSON.parse(message) as NormalizedTrade;
+    parsed = JSON.parse(message);
+  } catch {
+    log.error({ message }, 'Failed to JSON.parse trade message');
+    messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades', reason: 'parse' });
+    return;
+  }
+  // FIX #11: validate schema before processing
+  const result = NormalizedTradeRuntimeSchema.safeParse(parsed);
+  if (!result.success) {
+    log.warn({ err: result.error.message }, 'Invalid NormalizedTrade schema, skipping');
+    messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades', reason: 'validation' });
+    return;
+  }
+  const trade = result.data as NormalizedTrade;
+  try {
     processor.process(trade);
     const lag = Date.now() - trade.ts;
-    // FIX: label key must be 'core', not 'stage' (matches createGauge declaration)
     pipelineLagGauge.set({ core: 'trades-core' }, lag);
   } catch (e) {
-    log.error({ err: e, message }, 'Failed to process trade message');
-    messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades', reason: 'parse' });
+    log.error({ err: e }, 'Failed to process trade');
+    messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades', reason: 'process' });
   }
 });
 
@@ -96,10 +117,11 @@ async function start(): Promise<void> {
   metricsServer = await createMetricsServer(env.METRICS_PORT);
   log.info({ port: env.METRICS_PORT }, 'Metrics server started');
 
-  hbTimer = setInterval(
-    () => hb.set('heartbeat:trades-core', Date.now().toString(), 'EX', 30),
-    5_000
-  );
+  // FIX #3: add .catch() to prevent unhandled rejection on transient Valkey errors
+  hbTimer = setInterval(() => {
+    hb.set('heartbeat:trades-core', Date.now().toString(), 'EX', 30)
+      .catch((e: Error) => log.warn({ err: e.message }, 'hb set failed'));
+  }, 5_000);
 
   log.info('trades-core started');
 }

@@ -32,9 +32,6 @@ hb.on('error', (e: Error) => log.warn({ err: e.message }, 'hb error'));
 
 const evaluator = new AlertEvaluator(log, db);
 
-// FIX: rules is declared with let so loadRules() can atomically swap the
-// reference. evaluate() always receives the current snapshot via closure.
-// No rule object is mutated — lastTriggered lives in AlertEvaluator.lastTriggered.
 let rules: AlertRule[] = [];
 
 async function loadRules(): Promise<void> {
@@ -54,9 +51,7 @@ async function loadRules(): Promise<void> {
         log.warn({ id, err: e }, 'invalid alert rule, skipping');
       }
     }
-    // FIX: atomic swap — pmessage handler picks up new array on next tick
     rules = parsed;
-    // FIX: prune lastTriggered Map for rules that no longer exist
     evaluator.pruneLastTriggered(new Set(parsed.map(r => r.id)));
     log.info({ count: rules.length }, 'alert rules loaded');
   } catch (e) {
@@ -83,17 +78,6 @@ async function start(): Promise<void> {
   await loadRules();
   await evaluator.loadPrevValues();
 
-  // FIX #5: регистрируем обработчики сообщений ДО вызова subscribe/psubscribe.
-  //
-  // Проблема оригинального кода:
-  //   1. await subscribe('alert:rules:updated')   ← Valkey подтверждает подписку
-  //   2. await psubscribe('indicator:*')          ← ~1-5ms gap
-  //   3. sub.on('message', ...)                   ← обработчик регистрируется ПОСЛЕ
-  //
-  // В окне между шагом 1 и шагом 3 входящие сообщения 'alert:rules:updated'
-  // теряются: Valkey их доставит, но EventEmitter ещё не имеет слушателя.
-  //
-  // Решение: on('message') и on('pmessage') — ДО subscribe/psubscribe.
   sub.on('message', (ch: string) => {
     if (ch === 'alert:rules:updated') {
       loadRules().catch((e) => log.error(e, 'reload rules failed'));
@@ -114,8 +98,6 @@ async function start(): Promise<void> {
       return;
     }
     if (isNaN(value)) return;
-    // FIX: pass current snapshot of rules — loadRules() may swap the
-    // reference concurrently but evaluate() holds its own local ref
     const snapshot = rules;
     const events = evaluator.evaluate(snapshot, metric, symbol, value);
     if (events.length > 0) {
@@ -135,8 +117,10 @@ async function start(): Promise<void> {
     });
   });
 
-  hbTimer = setInterval(async () => {
-    await hb.set('heartbeat:alert-core', Date.now().toString(), 'EX', 30);
+  // FIX #9: use .catch() instead of async setInterval to prevent unhandled rejection
+  hbTimer = setInterval(() => {
+    hb.set('heartbeat:alert-core', Date.now().toString(), 'EX', 30)
+      .catch((e: Error) => log.warn({ err: e.message }, 'hb set failed'));
   }, 5_000);
 
   reloadTimer = setInterval(() => {

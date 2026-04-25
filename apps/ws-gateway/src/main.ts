@@ -30,7 +30,6 @@ const env = loadEnv(
 );
 const log = createLogger('ws-gateway');
 
-// FIX: JWT_SECRET is required in production — fail fast at startup
 if (!env.JWT_SECRET && env.NODE_ENV === 'production') {
   log.fatal('JWT_SECRET is required in production. Set it via environment variable.');
   process.exit(1);
@@ -66,6 +65,9 @@ const MAX_RATE_ENTRIES = 10_000;
 const connectionCounts = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT = 5;
 const RATE_WINDOW = 1000;
+// FIX #7: per-message rate limiting constants
+const MSG_RATE_LIMIT = 100;
+const MSG_RATE_WINDOW = 1000;
 
 const cleanupInterval = setInterval(() => {
   const now = Date.now();
@@ -93,21 +95,7 @@ function getClientIp(ws: uWS.WebSocket<unknown>): string {
   }
 }
 
-/**
- * FIX #4: normalizeIp — корректная обработка IPv6 для rate-limiting.
- *
- * Проблема старого кода:
- *   raw.split(':').slice(0, 4).join(':') не учитывает compressed '::' нотацию.
- *   '2001:db8::1'.split(':') → ['2001','db8','','1'] — неверный ключ.
- *
- * Решение:
- *   - IPv4-mapped IPv6 (::ffff:x.x.x.x) → берём IPv4-часть.
- *   - Чистый IPv6 → используем node:net.isIPv6 для валидации;
- *     для rate-limit берём первые 4 hex-группы из развёрнутого адреса (/64 subnet).
- *   - IPv4 → возвращаем как есть.
- */
 function expandIPv6(addr: string): string {
-  // Развернуть :: в полный 8-группный адрес
   const halves = addr.split('::');
   if (halves.length === 2) {
     const left = halves[0] ? halves[0].split(':') : [];
@@ -123,10 +111,8 @@ function expandIPv6(addr: string): string {
 
 function normalizeIp(raw: string): string {
   if (raw === 'unknown') return raw;
-  // IPv4-mapped IPv6
   if (raw.startsWith('::ffff:')) return raw.slice(7);
   if (isIPv6(raw)) {
-    // Берём первые 4 группы (64-bit prefix) как ключ для rate-limit
     const expanded = expandIPv6(raw);
     return expanded.split(':').slice(0, 4).join(':');
   }
@@ -165,7 +151,6 @@ function verifyJwt(token: string, secret: string, expectedIssuer: string): { sub
     if (typeof payload.exp === 'number' && Date.now() / 1000 > payload.exp) return null;
     if (typeof payload.nbf === 'number' && Date.now() / 1000 < payload.nbf) return null;
     if (payload.iss !== undefined && payload.iss !== expectedIssuer) return null;
-    // FIX: validate aud if present — reject tokens issued for other services
     if (payload.aud !== undefined && payload.aud !== 'ws-gateway') return null;
     if (!payload.sub || typeof payload.sub !== 'string') return null;
     return { sub: payload.sub };
@@ -179,10 +164,13 @@ const app = uWS.App().ws('/*', {
 
   upgrade(res, req, context) {
     const origin = req.getHeader('origin');
-    if (allowedOrigins && origin && !allowedOrigins.has(origin)) {
-      log.warn({ origin }, 'WebSocket upgrade rejected: Origin not allowed');
-      res.writeStatus('403 Forbidden').end('Origin not allowed');
-      return;
+    // FIX #5: block connections with missing or disallowed Origin when allowedOrigins is set
+    if (allowedOrigins) {
+      if (!origin || !allowedOrigins.has(origin)) {
+        log.warn({ origin: origin || '(empty)' }, 'WebSocket upgrade rejected: Origin not allowed');
+        res.writeStatus('403 Forbidden').end('Origin not allowed');
+        return;
+      }
     }
 
     const query = req.getQuery();
@@ -238,6 +226,9 @@ const app = uWS.App().ws('/*', {
     const id = crypto.randomUUID();
     (ws as unknown as Record<string, unknown>).__id = id;
     (ws as unknown as Record<string, unknown>).__ip = ip;
+    // FIX #7: initialize per-message rate limit state
+    (ws as unknown as Record<string, unknown>).__msgCount = 0;
+    (ws as unknown as Record<string, unknown>).__msgWindowStart = now;
     cm.add(id, ws);
     ws.send(JSON.stringify({ type: 'welcome', clientId: id }));
     wsConnectionsTotal.inc();
@@ -247,6 +238,23 @@ const app = uWS.App().ws('/*', {
   message(ws, msg, isBinary) {
     if (isBinary) return;
     const id = (ws as unknown as Record<string, unknown>).__id as string;
+
+    // FIX #7: per-message rate limiting — max 100 messages per second per client
+    const now = Date.now();
+    const msgWindowStart = (ws as unknown as Record<string, unknown>).__msgWindowStart as number;
+    let msgCount = (ws as unknown as Record<string, unknown>).__msgCount as number;
+    if (now - msgWindowStart > MSG_RATE_WINDOW) {
+      msgCount = 0;
+      (ws as unknown as Record<string, unknown>).__msgWindowStart = now;
+    }
+    msgCount++;
+    (ws as unknown as Record<string, unknown>).__msgCount = msgCount;
+    if (msgCount > MSG_RATE_LIMIT) {
+      log.warn({ clientId: id }, 'Message rate limit exceeded, closing connection');
+      ws.end(1008, 'Message rate limit exceeded');
+      return;
+    }
+
     try {
       const text = Buffer.from(msg).toString();
       const data = JSON.parse(text) as { type?: string; channels?: string[]; symbol?: string };
@@ -301,7 +309,6 @@ async function start(): Promise<void> {
     log.info('Shutting down ws-gateway...');
     clearInterval(cleanupInterval);
     await fanout.close();
-    // FIX: await quit() so Valkey buffers are flushed before process exits
     await valkeyPub.quit();
     await metricsServer!.close();
     process.exit(0);
