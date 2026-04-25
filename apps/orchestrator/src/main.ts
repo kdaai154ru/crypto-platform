@@ -146,6 +146,18 @@ async function start() {
   const api = Fastify({ logger: false });
 
   api.addHook('onRequest', ipWhitelist);
+
+  // Root route — краткий обзор сервиса
+  api.get('/', async () => ({
+    service: 'orchestrator',
+    version: process.env.npm_package_version ?? '0.0.0',
+    status: 'ok',
+    endpoints: [
+      { method: 'GET', path: '/health', description: 'health + modules list' },
+      { method: 'GET', path: '/status', description: 'modules status only' },
+    ],
+  }));
+
   api.get('/health', async () => ({ status: 'ok', modules: registry.all() }));
   api.get('/status', async () => registry.all());
 
