@@ -134,7 +134,6 @@ export class ValkeyStreams {
   /**
    * XPENDING батчем вместо N+1 запросов.
    * Один XPENDING на весь stream за итерацию.
-   * Map<msgId, deliveryCount> строится из результата.
    */
   private async reclaimStalePending(): Promise<void> {
     for (const stream of STREAM_KEYS) {
@@ -230,7 +229,7 @@ export class ValkeyStreams {
       }
       if (!messages || messages.length === 0) continue;
 
-      // getByChannel() called ONCE per stream, not per message — O(clients) not O(messages*clients)
+      // getByChannel() вызывается ОДИН раз на stream, не на каждое сообщение
       const clients = this.connectionManager.getByChannel(wsChannel);
       const msgIds: string[] = [];
 
@@ -266,13 +265,21 @@ export class ValkeyStreams {
         }
 
         const outgoing: StreamMessage = { type: wsChannel, data };
-        // payload serialised ONCE per message, reused for all clients — correct O(messages) not O(messages*clients)
+        // payload сериализуется ОДИН раз, переиспользуется для всех клиентов
         const payload = JSON.stringify(outgoing);
         const messageTs = typeof data?.ts === 'number' ? data.ts : undefined;
 
         for (const client of clients) {
           if (!client.ws) continue;
-          const sendResult = client.ws.send(payload);
+          // FIX: try/catch вокруг ws.send() — uWS может бросить исключение при закрытом сокете
+          let sendResult: number
+          try {
+            sendResult = client.ws.send(payload);
+          } catch {
+            this.logger.warn({ clientId: client.id }, 'ws.send() threw — removing stale client');
+            this.connectionManager.remove(client.id);
+            continue;
+          }
           if (sendResult === UWS_SEND_BACKPRESSURE || sendResult === UWS_SEND_DROPPED) {
             wsBackpressureDropsCounter.inc({ channel: wsChannel });
           } else {

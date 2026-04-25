@@ -27,12 +27,22 @@ const manager = new SubscriptionManager(log, 60_000);
 manager.on('start_stream', (sym: string, ch: string[]) => pub.publish('stream:start', JSON.stringify({ symbol: sym, channels: ch })));
 manager.on('stop_stream',  (sym: string)                => pub.publish('stream:stop',  JSON.stringify({ symbol: sym })));
 
+// FIX: guard против двойного replay при быстром exchange:ready (reconnect шторм)
+let isReplaying = false;
+const REPLAY_DEBOUNCE_MS = 5_000;
+
 function replayToExchange(): void {
+  if (isReplaying) {
+    log.warn('exchange:ready duplicate within debounce window, skipping replay');
+    return;
+  }
   const active = manager.getActivePairs();
   if (active.length === 0) {
     log.info('exchange:ready received, no active pairs to replay');
     return;
   }
+  isReplaying = true;
+  setTimeout(() => { isReplaying = false; }, REPLAY_DEBOUNCE_MS);
   log.info({ count: active.length }, 'exchange:ready — sending stream:replay');
   pub.publish('stream:replay', JSON.stringify({ pairs: active }));
 }
@@ -59,7 +69,6 @@ const hbInterval = setInterval(() => {
 }, 5_000);
 
 const shutdown = () => {
-  // FIX: сначала destroy() очищает все idleTimers, потом закрываем соединения
   clearInterval(hbInterval);
   manager.destroy();
   sub.quit();

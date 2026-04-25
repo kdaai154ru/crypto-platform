@@ -9,23 +9,14 @@ export const registry = new Registry();
 // Включаем сбор стандартных метрик Node.js (CPU, память, сборщик мусора и т.д.)
 collectDefaultMetrics({ register: registry });
 
-/**
- * Фабрика для создания Gauge метрик.
- */
 export function createGauge(name: string, help: string, labelNames: string[] = []): Gauge<string> {
   return new Gauge({ name, help, labelNames, registers: [registry] });
 }
 
-/**
- * Фабрика для создания Counter метрик.
- */
 export function createCounter(name: string, help: string, labelNames: string[] = []): Counter<string> {
   return new Counter({ name, help, labelNames, registers: [registry] });
 }
 
-/**
- * Фабрика для создания Histogram метрик.
- */
 export function createHistogram(
   name: string,
   help: string,
@@ -35,9 +26,6 @@ export function createHistogram(
   return new Histogram({ name, help, labelNames, buckets, registers: [registry] });
 }
 
-/**
- * Фабрика для создания Summary метрик.
- */
 export function createSummary(
   name: string,
   help: string,
@@ -51,7 +39,6 @@ export function createSummary(
 // Предопределенные метрики для всей платформы
 // ============================================
 
-// --- Orchestrator метрики ---
 export const moduleStatusGauge = createGauge(
   'crypto_module_status',
   'Статус модуля: 1=online, 0.5=degraded, 0.25=restarting, 0=offline',
@@ -80,7 +67,6 @@ export const activeClientsGauge = createGauge(
   'Количество активных WebSocket клиентов'
 );
 
-// --- WS Gateway метрики ---
 export const wsConnectionsTotal = createGauge(
   'crypto_ws_connections_total',
   'Текущее количество WebSocket соединений'
@@ -110,7 +96,6 @@ export const wsMessageLatencyHistogram = createHistogram(
   [1, 5, 10, 25, 50, 100, 250, 500]
 );
 
-// --- Exchange Core метрики ---
 export const exchangeRequestsCounter = createCounter(
   'crypto_exchange_requests_total',
   'Количество запросов к биржам',
@@ -142,7 +127,6 @@ export const rateLimitRemainingGauge = createGauge(
   ['exchange']
 );
 
-// --- Data pipeline метрики ---
 export const messagesProcessedCounter = createCounter(
   'crypto_messages_processed_total',
   'Количество обработанных сообщений',
@@ -176,12 +160,26 @@ export interface MetricsServer {
 }
 
 /**
- * Запускает HTTP сервер с единственным эндпоинтом /metrics для Prometheus.
- * @param port Порт для прослушивания
- * @returns Объект сервера с методом close()
+ * Запускает HTTP сервер с /metrics для Prometheus.
+ * FIX: добавлен IP-фильтр — /metrics доступен только с разрешённых адресов.
+ * Переменная окружения METRICS_ALLOWED_CIDR (по умолчанию '127.0.0.1').
  */
 export async function createMetricsServer(port: number): Promise<MetricsServer> {
   const app: FastifyInstance = Fastify({ logger: false });
+
+  // IP-фильтр: разрешаем только локальные/внутренние адреса
+  const allowedPrefixes = (process.env.METRICS_ALLOWED_CIDR ?? '127.0.0.1,::1,10.,172.,192.168.')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  app.addHook('onRequest', async (req, reply) => {
+    const ip = req.ip ?? '';
+    const allowed = allowedPrefixes.some(prefix => ip.startsWith(prefix));
+    if (!allowed) {
+      reply.code(403).send('Forbidden');
+    }
+  });
 
   app.get('/metrics', async (_, reply) => {
     const metrics = await registry.metrics();
