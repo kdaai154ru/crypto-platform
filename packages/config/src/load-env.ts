@@ -12,13 +12,19 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..', '..'
  * .partial(), etc.) without relying on instanceof — which breaks when the
  * zod package is loaded from more than one path in the module graph
  * (e.g. PM2 CJS fork loading a compiled ESM package).
+ *
+ * We cast through `unknown` first to satisfy TS — ZodTypeAny has no index
+ * signature so a direct cast to Record<string, unknown> is rejected (TS2352).
  */
 function isZodObject(schema: ZodTypeAny): schema is AnyZodObject {
+  const s = schema as unknown as Record<string, unknown>;
+  const def = s['_def'] as Record<string, unknown> | undefined;
   return (
-    typeof schema === 'object' &&
-    schema !== null &&
-    typeof (schema as Record<string, unknown>)['_def'] === 'object' &&
-    (schema as Record<string, unknown> & { _def: Record<string, unknown> })['_def']['typeName'] === 'ZodObject'
+    typeof s === 'object' &&
+    s !== null &&
+    typeof def === 'object' &&
+    def !== null &&
+    def['typeName'] === 'ZodObject'
   );
 }
 
@@ -45,9 +51,6 @@ export function loadEnv<T extends ZodTypeAny>(schema: T): output<T> {
   // (pm_id, axm_actions, autorestart, APPDATA, COMPUTERNAME, …).
   // Force strip mode so unknown keys are silently dropped regardless
   // of whether the schema was built with .strict() / .passthrough() / .merge().
-  //
-  // We use _def.typeName instead of instanceof to avoid the CJS dual-instance
-  // problem where two require() calls return different class objects.
   const safeSchema = isZodObject(schema) ? schema.strip() : schema;
 
   const result = safeSchema.safeParse(process.env);
