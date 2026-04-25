@@ -2,7 +2,12 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // iovalkey exports via module.exports= (CJS). With "type":"module" + NodeNext
+    // moduleResolution TypeScript refuses the default import without this flag.
+    // esModuleInterop in the base config implies allowSyntheticDefaultImports,
+    // but NodeNext ESM context requires it to be stated explicitly.
+    "allowSyntheticDefaultImports": true
   },
   "include": [
     "src/**/*.ts",
