@@ -73,6 +73,17 @@ export class ExchangeConnector {
       timeout: 30_000,
       newUpdates: true,
     });
+    // FIX: load markets immediately after creating exchange instance.
+    // Without this, watchTicker/watchTrades call this.market(symbol) which
+    // throws "markets not loaded" on the first message after every reconnect.
+    try {
+      await this.ex.loadMarkets();
+      this.logger.info({ id: this.id }, 'markets loaded');
+    } catch (e) {
+      // Non-fatal: some pro exchanges load markets lazily via WS.
+      // Log a warning and proceed — the stream will retry if it fails.
+      this.logger.warn({ id: this.id, err: e }, 'loadMarkets failed, continuing anyway');
+    }
     this.logger.info({ id: this.id }, 'connected');
   }
 
@@ -102,11 +113,8 @@ export class ExchangeConnector {
     try {
       await this.rm.schedule(() => this.connect());
       this.restarts++;
-      // FIX: reset CircuitBreaker after successful reconnect so streams
+      // Reset CircuitBreaker after successful reconnect so streams
       // can resume immediately instead of waiting 30s recovery timeout.
-      // Without this, CB stays OPEN → every watchTicker throws instantly
-      // → handleStreamError increments counter → cb.open() resets openAt
-      // → CB never reaches HALF_OPEN → infinite death loop.
       this.cb.reset();
       this.consecutiveErrors.clear();
       this.logger.info({ id: this.id }, 'CircuitBreaker reset after reconnect');
