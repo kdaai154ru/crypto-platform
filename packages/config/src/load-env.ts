@@ -1,31 +1,32 @@
 import { config as loadDotenv } from 'dotenv';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ZodTypeAny, AnyZodObject, output } from 'zod';
+import type { ZodTypeAny, output } from 'zod';
 
 // Absolute path to the monorepo root — reliable regardless of cwd.
 // packages/config/src/ → up 3 levels → repo root
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..', '..', '..');
 
 /**
- * Returns true for any ZodObject (including results of .merge(), .extend(),
- * .partial(), etc.) without relying on instanceof — which breaks when the
- * zod package is loaded from more than one path in the module graph
- * (e.g. PM2 CJS fork loading a compiled ESM package).
+ * Forcibly sets unknownKeys to 'strip' on any ZodObject-like schema by
+ * directly mutating _def. This bypasses instanceof and typeName checks,
+ * both of which fail when the zod package is loaded from more than one
+ * path in the module graph (e.g. PM2 CJS fork loading a compiled ESM pkg).
  *
- * We cast through `unknown` first to satisfy TS — ZodTypeAny has no index
- * signature so a direct cast to Record<string, unknown> is rejected (TS2352).
+ * Zod v3: ZodObject._def.unknownKeys is 'strip' | 'strict' | 'passthrough'.
+ * .merge() inherits the unknownKeys of the RIGHT operand, so a chain like
+ *   BaseSchema.merge(A).merge(B).merge(C)
+ * ends up with C's unknownKeys. If any operand was built with .strict()
+ * the result silently becomes strict — every unknown key → "Expected never".
+ *
+ * Returns the original schema reference (mutation is in-place).
  */
-function isZodObject(schema: ZodTypeAny): schema is AnyZodObject {
-  const s = schema as unknown as Record<string, unknown>;
-  const def = s['_def'] as Record<string, unknown> | undefined;
-  return (
-    typeof s === 'object' &&
-    s !== null &&
-    typeof def === 'object' &&
-    def !== null &&
-    def['typeName'] === 'ZodObject'
-  );
+function forceStrip<T extends ZodTypeAny>(schema: T): T {
+  const def = (schema as unknown as Record<string, unknown>)['_def'];
+  if (def !== null && typeof def === 'object') {
+    (def as Record<string, unknown>)['unknownKeys'] = 'strip';
+  }
+  return schema;
 }
 
 /**
@@ -34,8 +35,9 @@ function isZodObject(schema: ZodTypeAny): schema is AnyZodObject {
  * PM2 / shell happened to inject — prevents stale env from a previous
  * `pm2 start` without --update-env.
  *
- * Unknown keys (PM2 internals, Windows env vars, etc.) are always stripped
- * before validation regardless of how the schema was built.
+ * Unknown keys (PM2 internals, Windows env vars, other services' vars
+ * present in the shared .env) are always stripped before validation
+ * regardless of how the schema was built.
  *
  * Usage:
  *   const env = loadEnv(BaseSchema.merge(ValkeySchema));
@@ -47,11 +49,9 @@ export function loadEnv<T extends ZodTypeAny>(schema: T): output<T> {
   loadDotenv({ path: resolve(process.cwd(), '.env'), override: false });
   loadDotenv({ path: resolve(process.cwd(), '../../.env'), override: false });
 
-  // PM2 injects 100+ internal keys into process.env on every fork
-  // (pm_id, axm_actions, autorestart, APPDATA, COMPUTERNAME, …).
-  // Force strip mode so unknown keys are silently dropped regardless
-  // of whether the schema was built with .strict() / .passthrough() / .merge().
-  const safeSchema = isZodObject(schema) ? schema.strip() : schema;
+  // Force strip mode by directly mutating _def.unknownKeys.
+  // Avoids all instanceof / typeName fragility across module boundaries.
+  const safeSchema = forceStrip(schema);
 
   const result = safeSchema.safeParse(process.env);
 
