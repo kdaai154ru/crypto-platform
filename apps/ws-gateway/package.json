@@ -12,6 +12,7 @@
   "dependencies": {
     "@crypto-platform/config": "workspace:*",
     "@crypto-platform/logger": "workspace:*",
+    "@crypto-platform/metrics": "workspace:*",
     "@crypto-platform/types": "workspace:*",
     "iovalkey": "^0.3.3",
     "nanoid": "^5.1.9",
