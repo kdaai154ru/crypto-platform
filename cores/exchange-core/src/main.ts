@@ -25,6 +25,7 @@ const log = createLogger('exchange-core');
 const VALKEY_OPTS = {
   host: env.VALKEY_HOST,
   port: env.VALKEY_PORT,
+  ...(env.VALKEY_PASSWORD ? { password: env.VALKEY_PASSWORD } : {}),
   retryStrategy: (times: number) => Math.min(times * 100, 3000),
   keepAlive: 10000,
   enableOfflineQueue: true,
@@ -103,8 +104,6 @@ let metricsServer: MetricsServer | null = null;
 let hbTimer: ReturnType<typeof setInterval> | null = null;
 
 // FIX #8: resubscribe on Valkey reconnect
-// iovalkey Callback<T> is (err: Error | null | undefined, result: T) => void
-// so the callback param must accept undefined as well.
 function subscribeControlChannels(): void {
   sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e: Error | null | undefined) => {
     if (e) log.error({ err: e }, 'sub.subscribe failed');
@@ -219,7 +218,7 @@ async function start(): Promise<void> {
   };
 
   process.on('SIGTERM', shutdown);
-  process.on('SIGINT',  shutdown);
+  process.on('SIGINT', shutdown);
 
   log.info({ exchanges: exList }, 'exchange-core started');
 }
