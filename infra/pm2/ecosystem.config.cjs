@@ -1,6 +1,7 @@
 // infra/pm2/ecosystem.config.cjs
 // Единый PM2 конфиг для ВСЕГО проекта (бэкенд + фронтенд)
-// Запуск: pm2 start infra/pm2/ecosystem.config.cjs
+// Запуск:       pm2 start infra/pm2/ecosystem.config.cjs              (production)
+// Dev-запуск:   pm2 start infra/pm2/ecosystem.config.cjs --env development
 // Или через корень: pnpm start:all
 "use strict";
 const path = require("path");
@@ -19,6 +20,7 @@ const base = {
   max_memory_restart:        "512M",
   watch:                     false,
   env: { NODE_ENV: "production" },
+  env_development: { NODE_ENV: "development" },
   error_file: path.join(ROOT, "logs", "pm2-error.log"),
   out_file:   path.join(ROOT, "logs", "pm2-out.log"),
   merge_logs: true,
@@ -54,6 +56,12 @@ module.exports = {
         NUXT_PUBLIC_API_URL:   process.env.NUXT_PUBLIC_API_URL || "http://localhost:3010",
         PORT:                  process.env.FRONTEND_PORT        || "3001",
       },
+      env_development: {
+        NODE_ENV:              "development",
+        NUXT_PUBLIC_WS_URL:    process.env.NUXT_PUBLIC_WS_URL  || "ws://localhost:4000",
+        NUXT_PUBLIC_API_URL:   process.env.NUXT_PUBLIC_API_URL || "http://localhost:3010",
+        PORT:                  process.env.FRONTEND_PORT        || "3001",
+      },
     },
 
     // ─── CORES ───────────────────────────────────────────────
@@ -68,6 +76,10 @@ module.exports = {
       listen_timeout:     15000,
       env: {
         NODE_ENV:     "production",
+        NODE_OPTIONS: "--max-old-space-size=8192",
+      },
+      env_development: {
+        NODE_ENV:     "development",
         NODE_OPTIONS: "--max-old-space-size=8192",
       },
     },
@@ -115,6 +127,10 @@ module.exports = {
       max_memory_restart: "2G",
       env: {
         NODE_ENV:     "production",
+        NODE_OPTIONS: "--max-old-space-size=1536",
+      },
+      env_development: {
+        NODE_ENV:     "development",
         NODE_OPTIONS: "--max-old-space-size=1536",
       },
     },
