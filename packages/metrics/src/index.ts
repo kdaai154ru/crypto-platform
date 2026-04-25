@@ -1,12 +1,9 @@
 // packages/metrics/src/index.ts
 import { collectDefaultMetrics, Registry, Gauge, Counter, Histogram, Summary } from 'prom-client';
 import Fastify from 'fastify';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 
-// Создаем центральный реестр метрик
 export const registry = new Registry();
-
-// Включаем сбор стандартных метрик Node.js (CPU, память, сборщик мусора и т.д.)
 collectDefaultMetrics({ register: registry });
 
 export function createGauge(name: string, help: string, labelNames: string[] = []): Gauge<string> {
@@ -36,7 +33,7 @@ export function createSummary(
 }
 
 // ============================================
-// Предопределенные метрики для всей платформы
+// Platform-wide predefined metrics
 // ============================================
 
 export const moduleStatusGauge = createGauge(
@@ -159,31 +156,25 @@ export interface MetricsServer {
   close(): Promise<void>;
 }
 
-/**
- * Запускает HTTP сервер с /metrics для Prometheus.
- * FIX: добавлен IP-фильтр — /metrics доступен только с разрешённых адресов.
- * Переменная окружения METRICS_ALLOWED_CIDR (по умолчанию '127.0.0.1').
- */
 export async function createMetricsServer(port: number): Promise<MetricsServer> {
   const app: FastifyInstance = Fastify({ logger: false });
 
-  // IP-фильтр: разрешаем только локальные/внутренние адреса
-  const allowedPrefixes = (process.env.METRICS_ALLOWED_CIDR ?? '127.0.0.1,::1,10.,172.,192.168.')
+  const allowedPrefixes = (process.env['METRICS_ALLOWED_CIDR'] ?? '127.0.0.1,::1,10.,172.,192.168.')
     .split(',')
-    .map(s => s.trim())
+    .map((s: string) => s.trim())
     .filter(Boolean);
 
-  app.addHook('onRequest', async (req, reply) => {
-    const ip = req.ip ?? '';
-    const allowed = allowedPrefixes.some(prefix => ip.startsWith(prefix));
+  app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ip: string = req.ip ?? '';
+    const allowed = allowedPrefixes.some((prefix: string) => ip.startsWith(prefix));
     if (!allowed) {
-      reply.code(403).send('Forbidden');
+      await reply.code(403).send('Forbidden');
     }
   });
 
-  app.get('/metrics', async (_, reply) => {
+  app.get('/metrics', async (_req: FastifyRequest, reply: FastifyReply) => {
     const metrics = await registry.metrics();
-    reply
+    await reply
       .header('Content-Type', 'text/plain; version=0.0.4')
       .send(metrics);
   });
