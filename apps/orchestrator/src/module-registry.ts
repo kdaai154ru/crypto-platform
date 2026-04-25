@@ -1,10 +1,11 @@
 // apps/orchestrator/src/module-registry.ts
 import type { ModuleState, ModuleStatus } from '@crypto-platform/types';
 import type { Logger } from '@crypto-platform/logger';
+import type { Counter } from 'prom-client';
 
 const HEARTBEAT_TIMEOUT = 10_000;
-const RESTART_TIMEOUT = 30_000;
-const OFFLINE_TIMEOUT = 60_000;
+const RESTART_TIMEOUT  = 30_000;
+const OFFLINE_TIMEOUT  = 60_000;
 
 export const MODULE_IDS = [
   'exchange-core',
@@ -23,13 +24,10 @@ export const MODULE_IDS = [
   'storage-core',
 ];
 
-// FIX: widen labels type to Partial<Record<string, string | number>> so it is
-// assignable to prom-client Counter<string>.inc — which accepts string | number
-// label values, not only string.
+// Use the real prom-client Counter type so the assignment in main.ts
+// (passing moduleRestartsCounter directly) is always type-compatible.
 export interface ModuleRegistryMetrics {
-  restartsCounter?: {
-    inc: (labels?: Partial<Record<string, string | number>>) => void;
-  };
+  restartsCounter?: Counter<string>;
 }
 
 export class ModuleRegistry {
@@ -65,9 +63,7 @@ export class ModuleRegistry {
     if (wasOffline && newStatus === 'online') {
       s.restarts++;
       s.startedAt = now;
-      if (this.metrics.restartsCounter) {
-        this.metrics.restartsCounter.inc({ module: id });
-      }
+      this.metrics.restartsCounter?.inc({ module: id });
     } else if (s.startedAt === 0 && newStatus === 'online') {
       s.startedAt = now;
     }
@@ -86,9 +82,7 @@ export class ModuleRegistry {
         } else if (gap > RESTART_TIMEOUT) {
           s.status = 'restarting';
         } else if (gap > HEARTBEAT_TIMEOUT) {
-          if (s.status === 'online') {
-            s.status = 'degraded';
-          }
+          if (s.status === 'online') s.status = 'degraded';
         }
 
         if (s.status === 'online' && s.startedAt > 0) {
@@ -110,20 +104,18 @@ export class ModuleRegistry {
   reset(id: string): void {
     const s = this.states.get(id);
     if (s) {
-      s.status = 'offline';
+      s.status    = 'offline';
       s.lastHeartbeat = 0;
-      s.error = undefined;
+      s.error     = undefined;
       s.startedAt = 0;
-      s.uptimeMs = 0;
+      s.uptimeMs  = 0;
     }
   }
 
   getOffline(): string[] {
     const result: string[] = [];
     for (const [id, s] of this.states) {
-      if (s.status === 'offline' || s.status === 'restarting') {
-        result.push(id);
-      }
+      if (s.status === 'offline' || s.status === 'restarting') result.push(id);
     }
     return result;
   }
