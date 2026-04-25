@@ -24,8 +24,8 @@ const log = createLogger('trades-core');
 const VALKEY_OPTS = {
   host: env.VALKEY_HOST,
   port: env.VALKEY_PORT,
-  retryStrategy: (times: number) => Math.min(times * 100, 3000),
-  keepAlive: 10000,
+  retryStrategy: (times: number) => Math.min(times * 100, 3_000),
+  keepAlive: 10_000,
   enableOfflineQueue: true,
 };
 
@@ -37,38 +37,38 @@ sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
-// FIX(audit): resubscribe после reconnect Valkey.
-// iovalkey при reconnect переходит в состояние 'ready' заново,
-// но pub/sub подписки НЕ восстанавливаются автоматически — нужен явный re-subscribe.
+// FIX(audit): resubscribe after Valkey reconnect.
+// iovalkey does NOT auto-restore pub/sub on reconnect — explicit re-subscribe required.
+// FIX: callback type must be (err: Error | null | undefined) to match iovalkey Callback<unknown>
 sub.on('ready', () => {
   log.info('Valkey sub ready, subscribing to norm:* channels');
-  sub.subscribe('norm:trades', 'norm:ticker', 'norm:candle', (err: Error | null) => {
+  sub.subscribe('norm:trades', 'norm:ticker', 'norm:candle', (err: Error | null | undefined) => {
     if (err) log.error({ err }, 'Failed to subscribe to norm:* channels');
   });
 });
 
+// FIX: use CH_HOST / CH_PORT / CH_DATABASE — the actual field names in CHSchema
 const chWriter = new ClickHouseTradesWriter(
   log,
-  env.CLICKHOUSE_HOST,
-  env.CLICKHOUSE_PORT,
-  env.CLICKHOUSE_DB
+  env.CH_HOST,
+  env.CH_PORT,
+  env.CH_DATABASE
 );
 
-// FIX #4: writeBatch с catch — ошибки CH логируются и считаются в метриках
 const processor = new TradeProcessor(
   log,
   async (batch) => {
     try {
       await chWriter.writeBatch(batch);
-      messagesProcessedCounter.inc({ service: 'trades-core' }, batch.length);
+      // FIX: label key must be 'core', not 'service' (matches createCounter declaration)
+      messagesProcessedCounter.inc({ core: 'trades-core', channel: 'norm:trades' }, batch.length);
     } catch (e) {
-      messagesFailedCounter.inc({ service: 'trades-core' }, batch.length);
+      messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades', reason: 'ch_write' }, batch.length);
       log.error({ err: e, count: batch.length }, 'ClickHouse write failed');
       throw e; // re-throw so TradeProcessor re-buffers
     }
   },
   (delta) => {
-    // publish CVD delta to ws-gateway via pub/sub
     pub.publish('trades:delta', JSON.stringify(delta)).catch((e: Error) =>
       log.warn({ err: e.message }, 'Failed to publish delta')
     );
@@ -81,10 +81,11 @@ sub.on('message', (channel: string, message: string) => {
     const trade = JSON.parse(message) as NormalizedTrade;
     processor.process(trade);
     const lag = Date.now() - trade.ts;
-    pipelineLagGauge.set({ stage: 'trades-core' }, lag);
+    // FIX: label key must be 'core', not 'stage' (matches createGauge declaration)
+    pipelineLagGauge.set({ core: 'trades-core' }, lag);
   } catch (e) {
     log.error({ err: e, message }, 'Failed to process trade message');
-    messagesFailedCounter.inc({ service: 'trades-core' });
+    messagesFailedCounter.inc({ core: 'trades-core', channel: 'norm:trades', reason: 'parse' });
   }
 });
 
@@ -106,7 +107,6 @@ async function start(): Promise<void> {
 async function shutdown(): Promise<void> {
   log.info('Shutting down trades-core...');
   if (hbTimer) clearInterval(hbTimer);
-  // Flush remaining buffer to ClickHouse before exit
   await processor.flush();
   processor.destroy();
   await Promise.allSettled([sub.quit(), pub.quit(), hb.quit()]);
@@ -115,7 +115,7 @@ async function shutdown(): Promise<void> {
 }
 
 process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+process.on('SIGINT',  shutdown);
 
 start().catch((e) => {
   log.fatal(e);
