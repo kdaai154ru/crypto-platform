@@ -1,29 +1,23 @@
 // cores/exchange-core/src/connector.ts
-//
-// ccxt ships its own .d.ts via the "exports" map in its package.json.
-// Under CJS moduleResolution (no "type":"module" in our package.json)
-// `import ccxt from 'ccxt'` resolves to the default export which IS the
-// ccxt namespace object — giving us ccxt.Trade, ccxt.Ticker etc. as types.
-// `import * as ccxt` works in ESM context but NOT in CJS context under
-// NodeNext resolution, hence the switch to a default import here.
-import ccxt from 'ccxt';
+import ccxtLib from 'ccxt';
+import type * as ccxt from 'ccxt';
 import type { ExchangeId } from '@crypto-platform/types';
 import type { Logger } from '@crypto-platform/logger';
 import { CircuitBreaker } from '@crypto-platform/utils';
 import { ReconnectManager } from './reconnect-manager.js';
 import { RateLimiter } from './rate-limiter.js';
 
-export type TradeCallback  = (trade: ccxt.Trade,   exchange: ExchangeId) => void;
-export type TickerCallback = (ticker: ccxt.Ticker, exchange: ExchangeId) => void;
-export type CandleCallback = (candle: ccxt.OHLCV,  symbol: string, tf: string, exchange: ExchangeId) => void;
-
 // ccxt.pro is not in the public type declarations — access via cast.
-const pro = (ccxt as unknown as Record<string, unknown>).pro as
+const pro = (ccxtLib as unknown as Record<string, unknown>).pro as
   Record<string, new (o?: object) => ccxt.Exchange> | undefined;
 
 if (!pro || typeof pro !== 'object') {
   throw new Error('ccxt.pro namespace not found — upgrade ccxt to v4.4+');
 }
+
+export type TradeCallback  = (trade: ccxt.Trade,   exchange: ExchangeId) => void;
+export type TickerCallback = (ticker: ccxt.Ticker, exchange: ExchangeId) => void;
+export type CandleCallback = (candle: ccxt.OHLCV,  symbol: string, tf: string, exchange: ExchangeId) => void;
 
 const TRADES_LIMIT = 50;
 const CANDLES_LIMIT = 10;
