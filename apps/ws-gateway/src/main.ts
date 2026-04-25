@@ -64,6 +64,7 @@ if (!trustedProxySet) {
 const valkeyOpts = {
   host: env.VALKEY_HOST,
   port: env.VALKEY_PORT,
+  ...(env.VALKEY_PASSWORD ? { password: env.VALKEY_PASSWORD } : {}),
   retryStrategy: (times: number) => Math.min(times * 100, 3000),
   keepAlive: 10000,
   enableOfflineQueue: true,
