@@ -102,10 +102,11 @@ function handleStreamStart(symbol: string, channels: string[]): void {
 let metricsServer: MetricsServer | null = null;
 let hbTimer: ReturnType<typeof setInterval> | null = null;
 
-// FIX #8: resubscribe on Valkey reconnect — iovalkey does NOT restore
-// pub/sub subscriptions automatically after reconnect.
+// FIX #8: resubscribe on Valkey reconnect
+// iovalkey Callback<T> is (err: Error | null | undefined, result: T) => void
+// so the callback param must accept undefined as well.
 function subscribeControlChannels(): void {
-  sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e: Error | null) => {
+  sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e: Error | null | undefined) => {
     if (e) log.error({ err: e }, 'sub.subscribe failed');
     else log.info('exchange-core subscribed to control channels');
   });
@@ -133,11 +134,9 @@ async function start(): Promise<void> {
   }
 
   // FIX #2: register message handler BEFORE subscribing and publishing exchange:ready
-  // to avoid race condition where stream:start arrives before the handler is registered.
   sub.on('message', (ch: string, msg: string) => {
     try {
       if (ch === 'stream:start') {
-        // FIX #12: validate with zod before use
         const result = StreamStartSchema.safeParse(JSON.parse(msg));
         if (!result.success) {
           log.warn({ err: result.error.message }, 'stream:start invalid payload, ignoring');
@@ -182,7 +181,7 @@ async function start(): Promise<void> {
   });
 
   await new Promise<void>((resolve, reject) => {
-    sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e: Error | null) => {
+    sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e: Error | null | undefined) => {
       if (e) { log.error({ err: e }, 'sub.subscribe failed'); reject(e); }
       else resolve();
     });
@@ -214,7 +213,6 @@ async function start(): Promise<void> {
     log.info('Shutting down exchange-core...');
     if (hbTimer) clearInterval(hbTimer);
     connectors.forEach((c) => c.stopAll());
-    // FIX #1: await quit() so buffered publish commands are flushed before exit
     await Promise.allSettled([valkey.quit(), sub.quit(), hb.quit()]);
     if (metricsServer) await metricsServer.close();
     process.exit(0);
