@@ -3,7 +3,10 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "paths": {
+      "ccxt": ["../../node_modules/.pnpm/ccxt@4.4.82/node_modules/ccxt/js/ccxt.d.ts"]
+    }
   },
   "include": [
     "src/**/*.ts",
