@@ -7,8 +7,6 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 
-// FIX #31: лимиты памяти скорректированы под реальное потребление сервисов
-// Сервисы с буферами (aggregator, trades, screener) получили увеличенные лимиты
 const base = {
   cwd:                       ROOT,
   instances:                 1,
@@ -56,13 +54,12 @@ module.exports = {
       },
     },
 
-    // ─── CORES ───────────────────────────────────────────────
+    // ─── CORES ────────────────────────────────────────────────
     {
       ...base,
       name:               "exchange-core",
       script:             path.join(ROOT, "cores/exchange-core/dist/main.js"),
       // exchange-core: CCXT держит WS соединения + буферы по каждому символу
-      // 8G — агрессивно, но CCXT при 100+ символах реально съедает много
       max_restarts:       20,
       max_memory_restart: "8G",
       listen_timeout:     15000,
@@ -95,15 +92,14 @@ module.exports = {
       ...base,
       name:               "trades-core",
       script:             path.join(ROOT, "cores/trades-core/dist/main.js"),
-      // trades-core: TradeProcessor буфер до 50k трейдов + ClickHouse клиент
-      // при пиковой нагрузке буфер может занять ~200-300MB
+      // trades-core: TradeProcessor буфер + ClickHouse клиент
       max_memory_restart: "1G",
     },
     {
       ...base,
       name:               "indicator-core",
       script:             path.join(ROOT, "cores/indicator-core/dist/main.js"),
-      // indicator-core: вычисления RSI/MACD/etc — нужны скользящие окна
+      // indicator-core: скользящие окна RSI/MACD/BB по 200 свечей на символ
       max_memory_restart: "768M",
     },
     {
@@ -126,33 +122,51 @@ module.exports = {
     },
     {
       ...base,
-      name:   "derivatives-core",
-      script: path.join(ROOT, "cores/derivatives-core/dist/main.js"),
+      name:               "derivatives-core",
+      script:             path.join(ROOT, "cores/derivatives-core/dist/main.js"),
+      // FIX: явный лимит вместо наследования 512M из base
+      // derivatives: фьючерс, OI, ликвидации — 256k рекордов в памяти макс
+      max_memory_restart: "768M",
     },
     {
       ...base,
-      name:   "whale-core",
-      script: path.join(ROOT, "cores/whale-core/dist/main.js"),
+      name:               "whale-core",
+      script:             path.join(ROOT, "cores/whale-core/dist/main.js"),
+      // FIX: явный лимит вместо наследования 512M из base
+      // whale: временные структуры WhaleMonitor, небольшой футпринт — 512M с запасом
+      max_memory_restart: "512M",
     },
     {
       ...base,
-      name:   "etf-core",
-      script: path.join(ROOT, "cores/etf-core/dist/main.js"),
+      name:               "etf-core",
+      script:             path.join(ROOT, "cores/etf-core/dist/main.js"),
+      // FIX: явный лимит вместо наследования 512M из base
+      // etf: кэш ETF данных, может давать всплески при большом списке
+      max_memory_restart: "768M",
     },
     {
       ...base,
-      name:   "options-core",
-      script: path.join(ROOT, "cores/options-core/dist/main.js"),
+      name:               "options-core",
+      script:             path.join(ROOT, "cores/options-core/dist/main.js"),
+      // FIX: явный лимит вместо наследования 512M из base
+      // options: опционная цепочка, IV поверхность, может быть объёмными
+      max_memory_restart: "768M",
     },
     {
       ...base,
-      name:   "worker-core",
-      script: path.join(ROOT, "cores/worker-core/dist/main.js"),
+      name:               "worker-core",
+      script:             path.join(ROOT, "cores/worker-core/dist/main.js"),
+      // FIX: явный лимит вместо наследования 512M из base
+      // worker: scheduler + Valkey pub, минимальный футпринт
+      max_memory_restart: "256M",
     },
     {
       ...base,
-      name:   "storage-core",
-      script: path.join(ROOT, "cores/storage-core/dist/main.js"),
+      name:               "storage-core",
+      script:             path.join(ROOT, "cores/storage-core/dist/main.js"),
+      // FIX: явный лимит вместо наследования 512M из base
+      // storage: batch writer в ClickHouse, хранит буфер 10k записей перед flush
+      max_memory_restart: "512M",
     },
   ],
 };

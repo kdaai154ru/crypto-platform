@@ -6,7 +6,13 @@ import { CircuitBreaker } from '@crypto-platform/utils'
 import { ReconnectManager } from './reconnect-manager.js'
 import { RateLimiter } from './rate-limiter.js'
 
-export type TradeCallback = (trade: any, exchange: ExchangeId) => void
+// NOTE: TradeCallback / TickerCallback / CandleCallback accept `any` intentionally.
+// CCXT Pro does not export typed interfaces for watchTrades / watchTicker /
+// watchOHLCV return values.  The actual structure is documented in the CCXT
+// source but is not part of the public TypeScript API.  Using `any` here is a
+// deliberate escape hatch — the normalizer-core validates and narrows the types
+// before they ever reach domain code.
+export type TradeCallback  = (trade:  any, exchange: ExchangeId) => void
 export type TickerCallback = (ticker: any, exchange: ExchangeId) => void
 export type CandleCallback = (candle: any, symbol: string, tf: string, exchange: ExchangeId) => void
 
@@ -40,11 +46,9 @@ export class ExchangeConnector {
   private stoppingStreams = new Set<string>()
   private latencySamples: number[] = []
   private consecutiveErrors = new Map<string, number>()
-  // FIX #3: флаг предотвращает повторные итерации while пока идёт реконнект
   private isReconnecting = false
   public latencyMs = 0
   public lastMessageAt = 0
-  // FIX #7: реальные реконнекты, а не счётчик ошибок
   public restarts = 0
 
   constructor(
@@ -61,9 +65,7 @@ export class ExchangeConnector {
 
   async connect(): Promise<void> {
     if (this.ex) {
-      try {
-        await this.ex.close()
-      } catch {}
+      try { await this.ex.close() } catch {}
       this.ex = null
     }
     const ExClass = pro[this.id as string]
@@ -78,9 +80,7 @@ export class ExchangeConnector {
 
   private updateLatency(duration: number): void {
     this.latencySamples.push(duration)
-    if (this.latencySamples.length > LATENCY_SAMPLES) {
-      this.latencySamples.shift()
-    }
+    if (this.latencySamples.length > LATENCY_SAMPLES) this.latencySamples.shift()
     const sum = this.latencySamples.reduce((a, b) => a + b, 0)
     this.latencyMs = Math.round(sum / this.latencySamples.length)
   }
@@ -98,15 +98,12 @@ export class ExchangeConnector {
     this.consecutiveErrors.delete(streamKey)
   }
 
-  // FIX #3 + #7: единый метод реконнекта
-  // - isReconnecting блокирует while-петлю пока connect() не завершится
-  // - restarts инкрементируется один раз на один реальный реконнект
   private async reconnect(): Promise<void> {
     if (this.isReconnecting) return
     this.isReconnecting = true
     try {
       await this.rm.schedule(() => this.connect())
-      this.restarts++ // FIX #7: один инкремент на один реальный реконнект
+      this.restarts++
     } finally {
       this.isReconnecting = false
     }
@@ -115,13 +112,12 @@ export class ExchangeConnector {
   async watchTrades(symbol: string): Promise<void> {
     const key = `trades:${symbol}`
     if (this.activeStreams.size >= MAX_STREAMS) {
-      this.logger.warn({ id: this.id, size: this.activeStreams.size }, 'Max streams limit reached, rejecting new stream')
+      this.logger.warn({ id: this.id, size: this.activeStreams.size }, 'Max streams limit reached')
       return
     }
     if (this.activeStreams.has(key) || this.stoppingStreams.has(key)) return
     this.activeStreams.add(key)
     while (this.activeStreams.has(key) && !this.stoppingStreams.has(key)) {
-      // FIX #3: ждём завершения реконнекта перед следующей итерацией
       if (this.isReconnecting) {
         await new Promise<void>(resolve => setTimeout(resolve, 500))
         continue
@@ -131,18 +127,15 @@ export class ExchangeConnector {
         const trades = (await this.cb.execute(() =>
           this.ex.watchTrades(symbol, undefined, TRADES_LIMIT)
         )) as any[]
-        const duration = Date.now() - start
-        this.updateLatency(duration)
+        this.updateLatency(Date.now() - start)
         this.lastMessageAt = Date.now()
         for (const t of trades) this.onTrade(t, this.id)
-        if (this.ex.trades?.[symbol]) {
-          this.ex.trades[symbol].clear?.()
-        }
+        if (this.ex.trades?.[symbol]) this.ex.trades[symbol].clear?.()
         this.resetConsecutiveErrors(key)
       } catch (e) {
         this.logger.error({ symbol, err: e }, 'watchTrades error')
         this.handleStreamError(key, e)
-        await this.reconnect() // FIX #3: блокирует цикл до завершения реконнекта
+        await this.reconnect()
       }
     }
     this.activeStreams.delete(key)
@@ -152,7 +145,7 @@ export class ExchangeConnector {
   async watchTicker(symbol: string): Promise<void> {
     const key = `ticker:${symbol}`
     if (this.activeStreams.size >= MAX_STREAMS) {
-      this.logger.warn({ id: this.id, size: this.activeStreams.size }, 'Max streams limit reached, rejecting new stream')
+      this.logger.warn({ id: this.id, size: this.activeStreams.size }, 'Max streams limit reached')
       return
     }
     if (this.activeStreams.has(key) || this.stoppingStreams.has(key)) return
@@ -165,13 +158,10 @@ export class ExchangeConnector {
       const start = Date.now()
       try {
         const ticker = await this.cb.execute(() => this.ex.watchTicker(symbol))
-        const duration = Date.now() - start
-        this.updateLatency(duration)
+        this.updateLatency(Date.now() - start)
         this.lastMessageAt = Date.now()
         this.onTicker(ticker, this.id)
-        if (this.ex.tickers?.[symbol]) {
-          delete this.ex.tickers[symbol]
-        }
+        if (this.ex.tickers?.[symbol]) delete this.ex.tickers[symbol]
         this.resetConsecutiveErrors(key)
       } catch (e) {
         this.logger.error({ symbol, err: e }, 'watchTicker error')
@@ -186,7 +176,7 @@ export class ExchangeConnector {
   async watchOHLCV(symbol: string, tf: string): Promise<void> {
     const key = `ohlcv:${symbol}:${tf}`
     if (this.activeStreams.size >= MAX_STREAMS) {
-      this.logger.warn({ id: this.id, size: this.activeStreams.size }, 'Max streams limit reached, rejecting new stream')
+      this.logger.warn({ id: this.id, size: this.activeStreams.size }, 'Max streams limit reached')
       return
     }
     if (this.activeStreams.has(key) || this.stoppingStreams.has(key)) return
@@ -201,13 +191,10 @@ export class ExchangeConnector {
         const candles = (await this.cb.execute(() =>
           this.ex.watchOHLCV(symbol, tf, undefined, CANDLES_LIMIT)
         )) as any[]
-        const duration = Date.now() - start
-        this.updateLatency(duration)
+        this.updateLatency(Date.now() - start)
         this.lastMessageAt = Date.now()
         for (const c of candles) this.onCandle(c, symbol, tf, this.id)
-        if (this.ex.ohlcvs?.[symbol]?.[tf]) {
-          this.ex.ohlcvs[symbol][tf].length = 0
-        }
+        if (this.ex.ohlcvs?.[symbol]?.[tf]) this.ex.ohlcvs[symbol][tf].length = 0
         this.resetConsecutiveErrors(key)
       } catch (e) {
         this.logger.error({ symbol, tf, err: e }, 'watchOHLCV error')
@@ -230,18 +217,12 @@ export class ExchangeConnector {
   }
 
   stopAll(): void {
-    for (const key of this.activeStreams) {
-      this.stoppingStreams.add(key)
-    }
+    for (const key of this.activeStreams) this.stoppingStreams.add(key)
     this.activeStreams.clear()
-    try {
-      this.ex?.close?.()
-    } catch {}
+    try { this.ex?.close?.() } catch {}
   }
 
-  streamCount(): number {
-    return this.activeStreams.size
-  }
+  streamCount(): number { return this.activeStreams.size }
 
   getStats(): ConnectorStats {
     return {
