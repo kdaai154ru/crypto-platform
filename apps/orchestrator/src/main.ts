@@ -38,6 +38,20 @@ const registry = new ModuleRegistry(log, {
 });
 const broadcaster = new StatusBroadcaster(valkey, log);
 
+// FIX: zod schema for exchange status objects from Valkey
+// Previously parsed as any[] — silently accepted corrupt data from Valkey
+const ExchangeStatusSchema = z.array(
+  z.object({
+    id:            z.string(),
+    latencyMs:     z.number(),
+    streamCount:   z.number().optional(),
+    lastMessageAt: z.number().optional(),
+    restarts:      z.number().optional(),
+    circuitState:  z.string().optional(),
+  }).passthrough()
+);
+type ExchangeStatus = z.infer<typeof ExchangeStatusSchema>[number];
+
 const monitor = new HealthMonitor(
   registry,
   hbValkey,
@@ -56,12 +70,19 @@ const monitor = new HealthMonitor(
       return;
     }
 
-    const activePairs = pairsRaw ? parseInt(pairsRaw, 10) : 0;
+    const activePairs   = pairsRaw   ? parseInt(pairsRaw,   10) : 0;
     const activeClients = clientsRaw ? parseInt(clientsRaw, 10) : 0;
-    let exchanges: any[] = [];
+
+    // FIX: safe-parse exchanges JSON through zod instead of any[]
+    let exchanges: ExchangeStatus[] = [];
     if (exchangesRaw) {
       try {
-        exchanges = JSON.parse(exchangesRaw);
+        const parsed = ExchangeStatusSchema.safeParse(JSON.parse(exchangesRaw));
+        if (parsed.success) {
+          exchanges = parsed.data;
+        } else {
+          log.error({ issues: parsed.error.issues, exchangesRaw }, 'exchanges JSON failed zod validation');
+        }
       } catch (err) {
         log.error({ err, exchangesRaw }, 'Failed to parse exchanges JSON');
       }
@@ -73,8 +94,8 @@ const monitor = new HealthMonitor(
     const modules = registry.all();
     for (const m of modules) {
       const statusValue =
-        m.status === 'online' ? 1
-        : m.status === 'degraded' ? 0.5
+        m.status === 'online'     ? 1
+        : m.status === 'degraded'   ? 0.5
         : m.status === 'restarting' ? 0.25
         : 0;
       moduleStatusGauge.set({ module: m.id }, statusValue);
@@ -88,41 +109,24 @@ const monitor = new HealthMonitor(
 
 /**
  * FIX(audit): расширен IP whitelist:
- *  - ::ffff:127.x.x.x  — IPv4-mapped loopback (Docker/Node иногда возвращает этот формат)
+ *  - ::ffff:127.x.x.x  — IPv4-mapped loopback
  *  - fe80:              — IPv6 link-local
  *  - fc/fd              — IPv6 unique-local (RFC 4193)
  *  - 172.16-31.x.x     — Docker default bridge
- *  - 192.168.x.x       — Docker custom networks / host LAN
+ *  - 192.168.x.x       — Docker custom networks
  */
 function isPrivateIp(ip: string): boolean {
   if (!ip) return false;
-
-  // IPv4 loopback
   if (ip === '127.0.0.1') return true;
-
-  // IPv6 loopback
   if (ip === '::1') return true;
-
-  // IPv4-mapped loopback (::ffff:127.x.x.x)
   if (ip.startsWith('::ffff:127.')) return true;
-
-  // IPv6 link-local (fe80::/10)
   if (ip.toLowerCase().startsWith('fe80:')) return true;
-
-  // IPv6 unique-local (fc00::/7 — covers fc and fd prefixes)
   const lower = ip.toLowerCase();
   if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
-
-  // 10.x.x.x
   if (ip.startsWith('10.')) return true;
-
-  // 172.16.0.0/12 → 172.16.x.x – 172.31.x.x
   const m = ip.match(/^172\.(\d+)\./);
   if (m && parseInt(m[1]!, 10) >= 16 && parseInt(m[1]!, 10) <= 31) return true;
-
-  // 192.168.x.x
   if (ip.startsWith('192.168.')) return true;
-
   return false;
 }
 
