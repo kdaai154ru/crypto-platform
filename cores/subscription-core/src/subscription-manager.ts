@@ -24,11 +24,24 @@ export class SubscriptionManager extends EventEmitter {
   ) { super() }
 
   setAlwaysOn(symbols: string[]): void {
-    this.alwaysOn = new Set(symbols)
-    for (const s of symbols) this.subscribe('__always_on__', s, [])
+    // FIX: filter out empty/whitespace symbols to prevent invalid stream:replay payload
+    const valid = symbols.map(s => s.trim()).filter(s => s.length > 0)
+    if (valid.length !== symbols.length) {
+      this.log.warn(
+        { original: symbols.length, filtered: valid.length },
+        'setAlwaysOn: filtered out empty symbol entries'
+      )
+    }
+    this.alwaysOn = new Set(valid)
+    for (const s of valid) this.subscribe('__always_on__', s, [])
   }
 
   subscribe(viewerId: string, symbol: string, channels: string[]): void {
+    // FIX: guard against empty symbol reaching the map
+    if (!symbol || symbol.trim().length === 0) {
+      this.log.warn({ viewerId }, 'subscribe called with empty symbol, ignoring')
+      return
+    }
     let state = this.pairs.get(symbol)
     if (!state) {
       state = { symbol, refCount: 0, viewers: new Set(), channels: [], status: 'stopped' }
@@ -75,7 +88,7 @@ export class SubscriptionManager extends EventEmitter {
 
   getActivePairs(): Array<{ symbol: string; channels: string[] }> {
     return [...this.pairs.values()]
-      .filter(s => s.status === 'active')
+      .filter(s => s.status === 'active' && s.symbol.trim().length > 0)
       .map(s => ({ symbol: s.symbol, channels: s.channels }))
   }
 
