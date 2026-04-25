@@ -20,6 +20,7 @@ export class CircuitBreaker {
     if (this.state === 'open') {
       if (Date.now() - (this.openedAt ?? 0) >= this.opts.resetMs) {
         this.state = 'half-open'
+        this.successesInHalfOpen = 0
         return false
       }
       return true
@@ -27,17 +28,28 @@ export class CircuitBreaker {
     return false
   }
 
+  /**
+   * FIX: явный метод open() — используется в connector.ts handleStreamError.
+   * Без него: TypeError: this.cb.open is not a function при MAX_CONSECUTIVE_ERRORS.
+   */
+  open(): void {
+    if (this.state !== 'open') {
+      this.state = 'open'
+      this.openedAt = Date.now()
+      this.opts.onOpen?.()
+    }
+  }
+
   recordFailure(): void {
     if (this.state === 'half-open') {
       this.state = 'open'
       this.openedAt = Date.now()
+      this.successesInHalfOpen = 0
       return
     }
     this.failures++
     if (this.failures >= this.opts.threshold) {
-      this.state = 'open'
-      this.openedAt = Date.now()
-      this.opts.onOpen?.()
+      this.open()
     }
   }
 
@@ -52,5 +64,13 @@ export class CircuitBreaker {
       return
     }
     this.failures = 0
+  }
+
+  /**
+   * FIX: getState() — используется в connector.ts getStats().
+   * Без него: TypeError: this.cb.getState is not a function.
+   */
+  getState(): CBState {
+    return this.state
   }
 }
