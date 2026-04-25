@@ -1,7 +1,7 @@
 // cores/exchange-core/src/main.ts
 import { createLogger } from '@crypto-platform/logger';
 import { loadEnv, BaseSchema, ValkeySchema } from '@crypto-platform/config';
-import Valkey from 'iovalkey';
+import { Valkey } from 'iovalkey';
 import { z } from 'zod';
 import { ExchangeConnector } from './connector.js';
 import type { ExchangeId, Timeframe } from '@crypto-platform/types';
@@ -30,29 +30,30 @@ const VALKEY_OPTS = {
   enableOfflineQueue: true,
 };
 
+// Named import { Valkey } — iovalkey does not expose a default-export
+// constructor under NodeNext ESM (no construct signatures on the default).
 const valkey = new Valkey(VALKEY_OPTS);
-const sub = new Valkey(VALKEY_OPTS);
-const hb = new Valkey(VALKEY_OPTS);
+const sub    = new Valkey(VALKEY_OPTS);
+const hb     = new Valkey(VALKEY_OPTS);
 
 valkey.on('error', (e: Error) => log.warn({ err: e.message }, 'valkey error'));
-sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub error'));
-hb.on('error', (e: Error) => log.warn({ err: e.message }, 'hb error'));
+sub.on('error',   (e: Error) => log.warn({ err: e.message }, 'sub error'));
+hb.on('error',    (e: Error) => log.warn({ err: e.message }, 'hb error'));
 
 const exList: ExchangeId[] =
-  env.EXCHANGE_LIST?.split(',')
-    .map((s) => s.trim() as ExchangeId) ?? DEFAULT_EXCHANGES;
+  env.EXCHANGE_LIST?.split(',').map((s: string) => s.trim() as ExchangeId)
+  ?? DEFAULT_EXCHANGES;
 
 const connectors = new Map<ExchangeId, ExchangeConnector>();
 
-// Множество активных символов для дедупликации при stream:replay
 const activeSymbols = new Set<string>();
 
 function handleStreamStart(symbol: string, channels: string[]): void {
   const chs: string[] = channels ?? [];
   const needTicker = chs.length === 0 || chs.some((c) => c.startsWith('ticker:'));
   const needTrades = chs.length === 0 || chs.some((c) => c.startsWith('trades:'));
-  const needOi = chs.some((c) => c.startsWith('oi:'));
-  const needFund = chs.some((c) => c.startsWith('funding:'));
+  const needOi     = chs.some((c) => c.startsWith('oi:'));
+  const needFund   = chs.some((c) => c.startsWith('funding:'));
 
   const ohlcvTfs = [
     ...new Set(
@@ -64,17 +65,14 @@ function handleStreamStart(symbol: string, channels: string[]): void {
 
   for (const [, conn] of connectors) {
     if (needTicker)
-      conn
-        .watchTicker(symbol)
-        .catch((e) => log.warn({ symbol, err: (e as Error).message }, 'watchTicker failed'));
+      conn.watchTicker(symbol)
+          .catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchTicker failed'));
     if (needTrades)
-      conn
-        .watchTrades(symbol)
-        .catch((e) => log.warn({ symbol, err: (e as Error).message }, 'watchTrades failed'));
+      conn.watchTrades(symbol)
+          .catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchTrades failed'));
     for (const tf of ohlcvTfs)
-      conn
-        .watchOHLCV(symbol, tf)
-        .catch((e) => log.warn({ symbol, tf, err: (e as Error).message }, 'watchOHLCV failed'));
+      conn.watchOHLCV(symbol, tf)
+          .catch((e: Error) => log.warn({ symbol, tf, err: e.message }, 'watchOHLCV failed'));
     if (needOi)
       (conn as unknown as Record<string, (s: string) => Promise<void>>)
         .watchOI?.(symbol)
@@ -90,7 +88,6 @@ function handleStreamStart(symbol: string, channels: string[]): void {
 }
 
 let metricsServer: MetricsServer | null = null;
-// FIX #5 + trades-core #10: сохраняем ref таймера для clearInterval при shutdown
 let hbTimer: ReturnType<typeof setInterval> | null = null;
 
 async function start(): Promise<void> {
@@ -114,17 +111,10 @@ async function start(): Promise<void> {
     }
   }
 
-  // FIX #5: await подписки ДО публикации exchange:ready
-  // Исключает race condition: subscription-core не может получить stream:replay
-  // до того как sub завершил подписку
   await new Promise<void>((resolve, reject) => {
     sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e) => {
-      if (e) {
-        log.error({ err: e }, 'sub.subscribe failed');
-        reject(e);
-      } else {
-        resolve();
-      }
+      if (e) { log.error({ err: e }, 'sub.subscribe failed'); reject(e); }
+      else resolve();
     });
   });
 
@@ -143,7 +133,7 @@ async function start(): Promise<void> {
         log.info({ count: pairs.length }, 'replaying streams after reconnect');
         for (const { symbol, channels } of pairs) {
           if (activeSymbols.has(symbol)) {
-            log.debug({ symbol }, 'stream:replay skipped — symbol already active');
+            log.debug({ symbol }, 'stream:replay skipped — already active');
             continue;
           }
           handleStreamStart(symbol, channels);
@@ -153,9 +143,7 @@ async function start(): Promise<void> {
           log.warn('stream:stop received without symbol — ignoring');
           return;
         }
-        for (const [, conn] of connectors) {
-          conn.stopSymbol(parsed.symbol);
-        }
+        for (const [, conn] of connectors) conn.stopSymbol(parsed.symbol);
         activeSymbols.delete(parsed.symbol);
         log.info({ symbol: parsed.symbol }, 'streams stopped');
       }
@@ -164,14 +152,9 @@ async function start(): Promise<void> {
     }
   });
 
-  // Публикуем ТОЛЬКО после того как sub гарантированно подписан
   log.info('publishing exchange:ready');
-  await valkey.publish(
-    'exchange:ready',
-    JSON.stringify({ exchanges: exList })
-  );
+  await valkey.publish('exchange:ready', JSON.stringify({ exchanges: exList }));
 
-  // FIX #10: сохраняем ref — clearInterval в shutdown
   hbTimer = setInterval(async () => {
     await hb.set('heartbeat:exchange-core', Date.now().toString(), 'EX', 30);
     const states = [...connectors.entries()].map(([id, conn]) => {
@@ -195,14 +178,12 @@ async function start(): Promise<void> {
     valkey.quit();
     sub.quit();
     hb.quit();
-    if (metricsServer) {
-      await metricsServer.close();
-    }
+    if (metricsServer) await metricsServer.close();
     process.exit(0);
   };
 
   process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGINT',  shutdown);
 
   log.info({ exchanges: exList }, 'exchange-core started');
 }

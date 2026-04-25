@@ -11,14 +11,16 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@crypto-platform/config": "workspace:*",
+    "@crypto-platform/logger": "workspace:*",
+    "@crypto-platform/metrics": "workspace:*",
+    "@crypto-platform/types": "workspace:*",
+    "@crypto-platform/utils": "workspace:*",
     "ccxt": "4.4.82",
     "iovalkey": "0.3.3",
     "zod": "3.24.4"
   },
   "devDependencies": {
-    "@crypto-platform/types": "workspace:*",
-    "@crypto-platform/logger": "workspace:*",
-    "@crypto-platform/utils": "workspace:*",
     "@types/node": "22.15.0",
     "typescript": "5.8.3"
   }
