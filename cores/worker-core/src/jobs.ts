@@ -3,8 +3,7 @@ import type Valkey from 'iovalkey';
 import type { Logger } from '@crypto-platform/logger';
 import type { Job } from './scheduler.js';
 
-// FIX #3: вспомогательная функция SCAN вместо KEYS
-// KEYS блокирует Redis на весь скан — при большом числе ключей это заморозка всего
+// FIX #3: SCAN вместо KEYS — не блокирует Redis
 async function scanKeys(valkey: Valkey, pattern: string): Promise<string[]> {
   const result: string[] = [];
   let cursor = '0';
@@ -16,8 +15,8 @@ async function scanKeys(valkey: Valkey, pattern: string): Promise<string[]> {
   return result;
 }
 
-// FIX: accept Logger as second param so stale-key-cleanup emits structured pino events
-// instead of console.log (which bypasses pino transport in production)
+// FIX: accept Logger so stale-cleanup can use structured pino output
+// instead of console.log which bypasses the pino transport in production
 export function createJobs(valkey: Valkey, log: Logger): Job[] {
   return [
     {
@@ -54,11 +53,9 @@ export function createJobs(valkey: Valkey, log: Logger): Job[] {
             removed++;
           }
         }
-        // FIX: use pino logger instead of console.log
+        // FIX: structured log via pino instead of console.log
         if (removed > 0) {
           log.info({ removed }, 'stale-key-cleanup: removed stale heartbeat keys');
-        } else {
-          log.debug('stale-key-cleanup: no stale keys found');
         }
       },
     },

@@ -23,7 +23,7 @@ valkey.on('error', (e: Error) => log.warn({ err: e.message }, 'valkey connection
 hb.on('error',     (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
 const scheduler = new Scheduler(log);
-// FIX: pass `log` to createJobs so stale-key-cleanup uses pino instead of console.log
+// FIX: pass log to createJobs so stale-cleanup uses pino instead of console.log
 const jobs = createJobs(valkey, log);
 for (const job of jobs) scheduler.register(job);
 
