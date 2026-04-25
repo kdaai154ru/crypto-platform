@@ -24,10 +24,11 @@ export const JwtSchema = z.object({
 // ─── ClickHouse ──────────────────────────────────────────────────────────────────────────────
 export const CHSchema = z.object({
   // FIX: renamed from CH_* to CLICKHOUSE_* to match actual .env variable names.
+  // FIX: default changed from 8123 to 18123 to match Docker port mapping (18123->8123).
   // Previous mismatch caused zod to fall back to default(8123) instead of
   // reading CLICKHOUSE_PORT=18123, resulting in ECONNREFUSED 127.0.0.1:8123.
   CLICKHOUSE_HOST:     z.string().default('127.0.0.1'),
-  CLICKHOUSE_PORT:     z.coerce.number().int().min(1).max(65535).default(8123),
+  CLICKHOUSE_PORT:     z.coerce.number().int().min(1).max(65535).default(18123),
   CLICKHOUSE_DB:       z.string().default('crypto'),
   CLICKHOUSE_USER:     z.string().default('default'),
   CLICKHOUSE_PASSWORD: z.string().default(''),
