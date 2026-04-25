@@ -1,5 +1,5 @@
 # infra/docker/docker-compose.yml
-version: '3.9'
+# Note: 'version' field removed — obsolete in Compose v2 (Docker Desktop 4.x+)
 
 services:
   valkey:
@@ -7,14 +7,28 @@ services:
     container_name: crypto-valkey
     ports:
       - "6379:6379"
-    command: valkey-server --appendonly yes --requirepass ${VALKEY_PASSWORD}
+    command: >
+      sh -c '
+        if [ -n "$$VALKEY_PASSWORD" ]; then
+          valkey-server --appendonly yes --requirepass "$$VALKEY_PASSWORD"
+        else
+          valkey-server --appendonly yes
+        fi
+      '
     volumes:
       - valkey_data:/data
     networks:
       - crypto-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD}", "ping"]
+      test: >
+        CMD-SHELL sh -c '
+          if [ -n "$$VALKEY_PASSWORD" ]; then
+            valkey-cli -a "$$VALKEY_PASSWORD" ping
+          else
+            valkey-cli ping
+          fi
+        '
       interval: 10s
       timeout: 5s
       retries: 5
@@ -23,9 +37,9 @@ services:
     image: postgres:17-alpine
     container_name: crypto-postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-crypto}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB:-crypto}
+      POSTGRES_USER:     ${POSTGRES_USER:-crypto}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crypto_dev}
+      POSTGRES_DB:       ${POSTGRES_DB:-crypto}
     ports:
       - "5432:5432"
     volumes:
@@ -46,9 +60,9 @@ services:
       - "8123:8123"
       - "9000:9000"
     environment:
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-crypto}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB:       ${CLICKHOUSE_DB:-crypto}
+      CLICKHOUSE_USER:     ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     networks:
@@ -84,7 +98,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-    # FIX: добавлен healthcheck для prometheus — grafana depends_on him with condition
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
       interval: 15s
@@ -97,9 +110,9 @@ services:
     ports:
       - "3100:3000"
     environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_ADMIN_USER:     ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED:  "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/crypto-platform.json
     volumes:
       - grafana_data:/var/lib/grafana
@@ -107,7 +120,6 @@ services:
     networks:
       - crypto-net
     restart: unless-stopped
-    # FIX: condition: service_healthy — grafana не стартует пока prometheus не ready
     depends_on:
       prometheus:
         condition: service_healthy
@@ -124,7 +136,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-    # FIX: реальный HTTP probe вместо `nginx -t` (проверка конфига не гарантирует что nginx слушает)
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost/health || exit 1"]
       interval: 10s
