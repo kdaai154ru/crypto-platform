@@ -4,7 +4,8 @@
 // Reads VALKEY_HOST / VALKEY_PORT / VALKEY_PASSWORD from process.env so every
 // service automatically authenticates when VALKEY_PASSWORD is set — no need to
 // repeat the password wiring in every main.ts.
-import Valkey, { type RedisOptions } from 'iovalkey';
+import Valkey from 'iovalkey';
+import type { RedisOptions } from 'iovalkey';
 
 export interface ValkeyClientOptions {
   /** Extra iovalkey options merged on top of defaults. */
@@ -21,7 +22,7 @@ export interface ValkeyClientOptions {
  *   VALKEY_PORT     — default 6379
  *   VALKEY_PASSWORD — optional; omitted when empty string
  */
-export function createValkeyClient(opts: ValkeyClientOptions = {}): Valkey {
+export function createValkeyClient(opts: ValkeyClientOptions = {}): InstanceType<typeof Valkey> {
   const host     = process.env['VALKEY_HOST']     ?? '127.0.0.1';
   const port     = parseInt(process.env['VALKEY_PORT'] ?? '6379', 10);
   const password = process.env['VALKEY_PASSWORD'] ?? '';
