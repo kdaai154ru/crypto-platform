@@ -1,11 +1,26 @@
 import { config as loadDotenv } from 'dotenv';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { z, type ZodTypeAny, type output } from 'zod';
+import type { ZodTypeAny, AnyZodObject, output } from 'zod';
 
 // Absolute path to the monorepo root — reliable regardless of cwd.
 // packages/config/src/ → up 3 levels → repo root
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..', '..', '..');
+
+/**
+ * Returns true for any ZodObject (including results of .merge(), .extend(),
+ * .partial(), etc.) without relying on instanceof — which breaks when the
+ * zod package is loaded from more than one path in the module graph
+ * (e.g. PM2 CJS fork loading a compiled ESM package).
+ */
+function isZodObject(schema: ZodTypeAny): schema is AnyZodObject {
+  return (
+    typeof schema === 'object' &&
+    schema !== null &&
+    typeof (schema as Record<string, unknown>)['_def'] === 'object' &&
+    (schema as Record<string, unknown> & { _def: Record<string, unknown> })['_def']['typeName'] === 'ZodObject'
+  );
+}
 
 /**
  * Loads .env from the monorepo root, then validates process.env against
@@ -30,9 +45,10 @@ export function loadEnv<T extends ZodTypeAny>(schema: T): output<T> {
   // (pm_id, axm_actions, autorestart, APPDATA, COMPUTERNAME, …).
   // Force strip mode so unknown keys are silently dropped regardless
   // of whether the schema was built with .strict() / .passthrough() / .merge().
-  const safeSchema = schema instanceof z.ZodObject
-    ? (schema as z.AnyZodObject).strip()
-    : schema;
+  //
+  // We use _def.typeName instead of instanceof to avoid the CJS dual-instance
+  // problem where two require() calls return different class objects.
+  const safeSchema = isZodObject(schema) ? schema.strip() : schema;
 
   const result = safeSchema.safeParse(process.env);
 
