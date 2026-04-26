@@ -3,6 +3,11 @@ import { createClient } from '@clickhouse/client'
 import type { NormalizedTrade } from '@crypto-platform/types'
 import type { Logger } from '@crypto-platform/logger'
 
+/** Convert ISO string or timestamp to ClickHouse DateTime64 format: "YYYY-MM-DD HH:mm:ss.SSS" */
+function toChDateTime(ts: string | number): string {
+  return new Date(ts).toISOString().replace('T', ' ').replace('Z', '')
+}
+
 export class ClickHouseTradesWriter {
   private client
 
@@ -14,11 +19,6 @@ export class ClickHouseTradesWriter {
     username = 'default',
     password = '',
   ) {
-    // @clickhouse/client >=1.x accepts credentials either via top-level
-    // username/password fields OR embedded in the URL as userinfo.
-    // Some versions require the URL form when password contains special chars.
-    // We use the explicit fields (spec-compliant) and also embed in URL as
-    // a fallback so the HTTP Authorization header is always sent correctly.
     const encodedUser = encodeURIComponent(username);
     const encodedPass = encodeURIComponent(password);
     const url = password
@@ -42,7 +42,7 @@ export class ClickHouseTradesWriter {
       values: trades.map(t => ({
         symbol:    t.symbol,
         exchange:  t.exchange,
-        ts:        new Date(t.ts).toISOString(),
+        ts:        toChDateTime(t.ts),
         side:      t.side,
         price:     t.price,
         qty:       t.qty,
