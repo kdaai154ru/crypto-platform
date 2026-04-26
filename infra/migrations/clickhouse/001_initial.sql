@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS crypto.trades (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(ts)
 ORDER BY (symbol, exchange, ts)
-TTL ts + INTERVAL 7 DAY;
+TTL toDateTime(ts) + INTERVAL 7 DAY;
 
 CREATE TABLE IF NOT EXISTS crypto.candles_1m (
   symbol      LowCardinality(String),
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS crypto.candles_1m (
   sell_volume Float64
 ) ENGINE = MergeTree()
 ORDER BY (symbol, exchange, ts)
-TTL ts + INTERVAL 90 DAY;
+TTL toDateTime(ts) + INTERVAL 90 DAY;
 
 CREATE TABLE IF NOT EXISTS crypto.liquidations (
   symbol    LowCardinality(String),
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS crypto.liquidations (
   usd_value Float64
 ) ENGINE = MergeTree()
 ORDER BY (symbol, exchange, ts)
-TTL ts + INTERVAL 90 DAY;
+TTL toDateTime(ts) + INTERVAL 90 DAY;
 
 CREATE TABLE IF NOT EXISTS crypto.oi_history (
   symbol   LowCardinality(String),
