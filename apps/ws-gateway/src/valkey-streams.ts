@@ -25,6 +25,14 @@ const CHANNEL_MAP: Record<string, string> = {
   'system:status': 'system_status',
 };
 
+// Channels that must be delivered to ALL connected clients regardless of subscription
+const BROADCAST_WS_CHANNELS = new Set([
+  'system_status',
+  'screener_update',
+  'options_update',
+  'etf_latest',
+]);
+
 const STREAM_KEYS = Object.keys(CHANNEL_MAP);
 const CONSUMER_GROUP = 'ws-gateway';
 const CONSUMER_NAME = `${os.hostname()}-${process.pid}`;
@@ -49,7 +57,6 @@ export class ValkeyStreams {
   private reclaimTimer: ReturnType<typeof setInterval> | null = null;
   private isPolling = false;
   // FIX #10: track whether a reconnect happened while pollLoop was in error-sleep
-  // so we can correctly restart the loop from the 'ready' handler.
   private connectionLost = false;
 
   constructor(
@@ -62,7 +69,6 @@ export class ValkeyStreams {
 
     this.subscriber.on('error', (err: Error) => {
       this.logger.error({ err }, 'ValkeyStreams subscriber error');
-      // FIX #10: mark connection as lost so pollLoop exits cleanly on next iteration
       this.connectionLost = true;
     });
 
@@ -79,13 +85,6 @@ export class ValkeyStreams {
 
         if (this.isRunning) {
           this.startReclaimTimer();
-          // FIX #10: reset connectionLost flag before potentially starting a new loop.
-          // If isPolling is true here, the old loop may be in error-sleep with
-          // connectionLost=true and will exit on its next iteration, then isPolling
-          // will become false — but we miss the window to start a new loop.
-          // Solution: always reset connectionLost, and if the old loop is sleeping,
-          // it will exit (connectionLost was true when it checked), then isPolling
-          // becomes false. We schedule a delayed check to restart the loop.
           this.connectionLost = false;
           if (!this.isPolling) {
             this.isPolling = true;
@@ -93,8 +92,6 @@ export class ValkeyStreams {
               this.isPolling = false;
             });
           } else {
-            // Old loop is still running (in error-sleep). It will see connectionLost=false
-            // now and continue normally — no need to start a new one.
             this.logger.info('pollLoop already running after reconnect, continuing');
           }
         }
@@ -198,7 +195,6 @@ export class ValkeyStreams {
 
   private async pollLoop(): Promise<void> {
     while (this.isRunning) {
-      // FIX #10: if connection was lost, exit the loop — 'ready' handler will start a new one
       if (this.connectionLost) {
         this.logger.warn('pollLoop: connection lost flag set, exiting loop to allow reconnect restart');
         break;
@@ -222,7 +218,7 @@ export class ValkeyStreams {
           this.connectionLost
         ) {
           this.logger.warn('Valkey connection lost during poll, exiting pollLoop for reconnect');
-          break; // FIX #10: exit loop cleanly; 'ready' will restart it
+          break;
         } else {
           this.logger.error({ err }, 'Stream polling error');
           await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
@@ -244,7 +240,14 @@ export class ValkeyStreams {
       }
       if (!messages || messages.length === 0) continue;
 
-      const clients = this.connectionManager.getByChannel(wsChannel);
+      const isBroadcast = BROADCAST_WS_CHANNELS.has(wsChannel);
+
+      // For broadcast channels use all connected clients;
+      // for symbol-specific channels use only subscribed clients.
+      const clients = isBroadcast
+        ? this.connectionManager.all()
+        : this.connectionManager.getByChannel(wsChannel);
+
       const msgIds: string[] = [];
 
       if (clients.length === 0) {
@@ -284,7 +287,7 @@ export class ValkeyStreams {
 
         for (const client of clients) {
           if (!client.ws) continue;
-          let sendResult: number
+          let sendResult: number;
           try {
             sendResult = client.ws.send(payload);
           } catch {
