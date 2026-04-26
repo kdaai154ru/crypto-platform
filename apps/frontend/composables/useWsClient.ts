@@ -17,25 +17,28 @@ let   ws: WebSocket | null = null
 let   reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 const handlers    = new Map<string, Set<(data: unknown) => void>>()
-const pendingSubs = new Map<string, Set<string>>() // channel → Set of symbols
+const pendingSubs = new Map<string, Set<string>>() // channel → Set of symbols (только symbol-specific)
 
 let initialized = false
-// FIX: wsUrl кэшируется после первого вызова useWsClient() внутри Nuxt-контекста
+let connecting  = false   // FIX #3: предотвращает race condition между new WebSocket() и onopen
 let cachedWsUrl: string | null = null
 
 function connect() {
-  // cachedWsUrl гарантированно установлен до вызова connect()
-  const url = cachedWsUrl!
+  // FIX #3: двойная защита — проверяем и существующий сокет, и флаг connecting.
+  // Без connecting возможна щель: ws ещё null (readyState недоступен),
+  // но второй вызов connect() уже проходит проверку ws?.readyState < 2.
+  if (connecting || (ws && ws.readyState < 2)) return
+  connecting = true
 
-  if (ws && ws.readyState < 2) return
+  const url = cachedWsUrl!
   ws = new WebSocket(url)
 
   ws.onopen = () => {
+    connecting = false
     connected.value = true
-    // Restore symbol-specific subscriptions after reconnect.
-    // Broadcast channels are delivered automatically — skip them.
+    // Восстанавливаем только symbol-specific подписки после реконнекта.
+    // Broadcast-каналы ws-gateway доставляет всем автоматически — пропускаем.
     for (const [channel, symbols] of pendingSubs) {
-      if (BROADCAST_CHANNELS.has(channel)) continue
       for (const symbol of symbols) {
         ws!.send(JSON.stringify({ type: 'subscribe', channels: [channel], symbol }))
       }
@@ -43,18 +46,22 @@ function connect() {
   }
 
   ws.onclose = () => {
+    connecting = false
     connected.value = false
     ws = null
     if (reconnectTimer) clearTimeout(reconnectTimer)
     reconnectTimer = setTimeout(connect, 3000)
   }
 
-  ws.onerror = () => ws?.close()
+  ws.onerror = () => {
+    // onerror всегда предшествует onclose — onclose сбросит connecting
+    ws?.close()
+  }
 
   ws.onmessage = (e) => {
     try {
-      const msg = JSON.parse(e.data)
-      if (msg.type === 'welcome') { clientId.value = msg.clientId; return }
+      const msg = JSON.parse(e.data as string) as { type: string; clientId?: string; data?: unknown }
+      if (msg.type === 'welcome') { clientId.value = msg.clientId ?? null; return }
       const cbs = handlers.get(msg.type)
       if (cbs) for (const cb of cbs) cb(msg.data)
     } catch { /* ignore */ }
@@ -64,8 +71,6 @@ function connect() {
 export function useWsClient() {
   if (!initialized && import.meta.client) {
     initialized = true
-    // FIX: useRuntimeConfig() вызывается здесь — внутри Nuxt composable контекста,
-    // а не на уровне модуля где Nuxt-контекст ещё не доступен.
     const { public: pub } = useRuntimeConfig()
     cachedWsUrl = (pub.wsUrl as string) ?? 'ws://localhost:4000'
     connect()
@@ -75,15 +80,19 @@ export function useWsClient() {
     if (!handlers.has(channel)) handlers.set(channel, new Set())
     const set = handlers.get(channel)!
 
-    // Guard: do not add the same callback reference twice.
+    // Guard: один и тот же callback не добавляем дважды
     if (set.has(cb)) return
     set.add(cb)
 
-    if (!pendingSubs.has(channel)) pendingSubs.set(channel, new Set())
-    pendingSubs.get(channel)!.add(symbol)
+    // FIX #5: broadcast-каналы НЕ добавляем в pendingSubs.
+    // Пустая строка '' в Set не приносит вреда сама по себе, но
+    // pendingSubs используется в onopen для переподписки — broadcast
+    // там не нужны. Накопление '' при каждом реконнекте бессмысленно.
+    if (!BROADCAST_CHANNELS.has(channel)) {
+      if (!pendingSubs.has(channel)) pendingSubs.set(channel, new Set())
+      pendingSubs.get(channel)!.add(symbol)
 
-    if (ws?.readyState === WebSocket.OPEN) {
-      if (!BROADCAST_CHANNELS.has(channel)) {
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'subscribe', channels: [channel], symbol }))
       }
     }
@@ -92,15 +101,21 @@ export function useWsClient() {
   function unsubscribe(channel: string, symbol: string, cb: (d: unknown) => void) {
     const set = handlers.get(channel)
     if (!set) return
+
+    // FIX #5: всегда удаляем конкретный callback, даже если в Set остались другие.
+    // Раньше callback удалялся только при set.size === 0, «мёртвые» cb копились в памяти.
     set.delete(cb)
 
     if (set.size === 0) {
       handlers.delete(channel)
-      pendingSubs.delete(channel)
-      if (ws?.readyState === WebSocket.OPEN && !BROADCAST_CHANNELS.has(channel)) {
-        ws.send(JSON.stringify({ type: 'unsubscribe', channels: [channel], symbol }))
+      if (!BROADCAST_CHANNELS.has(channel)) {
+        pendingSubs.delete(channel)
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'unsubscribe', channels: [channel], symbol }))
+        }
       }
-    } else {
+    } else if (!BROADCAST_CHANNELS.has(channel)) {
+      // Остались другие подписчики — удаляем только этот symbol если он больше не нужен
       pendingSubs.get(channel)?.delete(symbol)
     }
   }
@@ -114,6 +129,7 @@ if (import.meta.hot) {
     ws?.close()
     ws = null
     initialized = false
+    connecting  = false
     cachedWsUrl = null
     handlers.clear()
     pendingSubs.clear()

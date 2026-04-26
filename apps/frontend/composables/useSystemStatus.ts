@@ -1,21 +1,30 @@
 // apps/frontend/composables/useSystemStatus.ts
-import { ref, onScopeDispose } from 'vue'
+//
+// FIX #4: единственный источник подписки на system_status.
+// Обновляет глобальный sysStore напрямую — StatusBar.vue и любые другие
+// компоненты читают useSystemStore() и всегда видят актуальные данные
+// независимо от того, с какой страницы они рендерятся.
+//
+// Использование: вызвать useSystemStatus() в любом компоненте или layout.
+// Повторные вызовы безопасны — callback-guard в useWsClient предотвращает
+// дублирование (if (set.has(cb)) return).
+import { onScopeDispose } from 'vue'
+import { useSystemStore } from '~/stores/system.store'
 import type { SystemStatusPayload } from '@crypto-platform/types'
 
 export function useSystemStatus() {
-  const status = ref<SystemStatusPayload | null>(null)
+  const sysStore = useSystemStore()
   const { subscribe, unsubscribe } = useWsClient()
 
   function handler(data: unknown) {
-    status.value = data as SystemStatusPayload
+    sysStore.update(data as SystemStatusPayload)
   }
 
-  // ws-gateway sends type='system_status' (underscore, matches CHANNEL_MAP)
   subscribe('system_status', '', handler)
 
-  // Remove this specific callback when the owning component/scope is destroyed
-  // to prevent stale handler accumulation across remounts
+  // Удаляем callback когда scope уничтожается (компонент/layout размонтирован)
   onScopeDispose(() => unsubscribe('system_status', '', handler))
 
-  return { status }
+  // Возвращаем sysStore напрямую — нет смысла дублировать payload в локальный ref
+  return sysStore
 }
