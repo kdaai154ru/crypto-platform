@@ -3,15 +3,21 @@ import type Valkey from 'iovalkey';
 import { ConnectionManager, MAX_SUBSCRIPTIONS_PER_CLIENT } from './connection-manager.js';
 import type { Logger } from '@crypto-platform/logger';
 
-// Broadcast channels that do not require a symbol
+/**
+ * Broadcast channels — delivered to ALL clients, no symbol required.
+ * Names must match ws-gateway CHANNEL_MAP output values (underscore format).
+ * Also accept the colon-format aliases sent by some frontends.
+ */
 const BROADCAST_CHANNELS = new Set([
+  // underscore (canonical — what ws-gateway sends as msg.type)
   'system_status',
-  'system:status',
   'screener_update',
-  'screener:update',
   'options_update',
-  'options:update',
   'etf_latest',
+  // colon aliases (legacy / just in case)
+  'system:status',
+  'screener:update',
+  'options:update',
   'etf:latest',
 ]);
 
@@ -38,7 +44,7 @@ export class SubscriptionHandler {
 
       // Non-broadcast channels require a symbol
       if (!isBroadcast && !sym) {
-        this.log.warn({ clientId: id, channel }, 'subscribe: symbol is empty or missing for non-broadcast channel, skipping');
+        this.log.warn({ clientId: id, channel }, 'subscribe: symbol missing for non-broadcast channel, skipping');
         continue;
       }
 
@@ -54,17 +60,11 @@ export class SubscriptionHandler {
       const added = this.connectionManager.addSubscription(id, channel);
       if (added) {
         if (isBroadcast) {
-          // Broadcast channels: just register the subscription locally,
-          // no sub:request needed — data is pushed to all clients
           this.log.debug({ clientId: id, channel }, 'Registered broadcast channel subscription');
         } else {
           this.valkey.publish(
             'sub:request',
-            JSON.stringify({
-              viewerId: id,
-              channel,
-              symbol: sym,
-            })
+            JSON.stringify({ viewerId: id, channel, symbol: sym })
           ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:request'));
         }
       }
@@ -85,11 +85,7 @@ export class SubscriptionHandler {
       if (!isBroadcast && sym) {
         this.valkey.publish(
           'sub:release',
-          JSON.stringify({
-            viewerId: id,
-            channel,
-            symbol: sym,
-          })
+          JSON.stringify({ viewerId: id, channel, symbol: sym })
         ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:release'));
       }
     }
@@ -106,10 +102,7 @@ export class SubscriptionHandler {
       if (!isBroadcast) {
         this.valkey.publish(
           'sub:release',
-          JSON.stringify({
-            viewerId: id,
-            channel,
-          })
+          JSON.stringify({ viewerId: id, channel })
         ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:release'));
       }
     }
