@@ -75,8 +75,27 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS crypto.candles_5m
 ENGINE = MergeTree() ORDER BY (symbol, exchange, ts)
 POPULATE AS
 SELECT
-  symbol, exchange,
+  symbol,
+  exchange,
   toStartOfFiveMinutes(ts) AS ts,
+  argMin(open, ts)         AS open,
+  max(high)                AS high,
+  min(low)                 AS low,
+  argMax(close, ts)        AS close,
+  sum(volume)              AS volume,
+  sum(buy_volume)          AS buy_volume,
+  sum(sell_volume)         AS sell_volume
+FROM crypto.candles_1m
+GROUP BY symbol, exchange, toStartOfFiveMinutes(ts) AS ts;
+
+-- Materialized view: 1h candles from 1m
+CREATE MATERIALIZED VIEW IF NOT EXISTS crypto.candles_1h
+ENGINE = MergeTree() ORDER BY (symbol, exchange, ts)
+POPULATE AS
+SELECT
+  symbol,
+  exchange,
+  toStartOfHour(ts)  AS ts,
   argMin(open, ts)   AS open,
   max(high)          AS high,
   min(low)           AS low,
@@ -85,17 +104,4 @@ SELECT
   sum(buy_volume)    AS buy_volume,
   sum(sell_volume)   AS sell_volume
 FROM crypto.candles_1m
-GROUP BY symbol, exchange, toStartOfFiveMinutes(ts);
-
--- Materialized view: 1h candles
-CREATE MATERIALIZED VIEW IF NOT EXISTS crypto.candles_1h
-ENGINE = MergeTree() ORDER BY (symbol, exchange, ts)
-POPULATE AS
-SELECT
-  symbol, exchange,
-  toStartOfHour(ts) AS ts,
-  argMin(open, ts) AS open, max(high) AS high, min(low) AS low,
-  argMax(close, ts) AS close, sum(volume) AS volume,
-  sum(buy_volume) AS buy_volume, sum(sell_volume) AS sell_volume
-FROM crypto.candles_1m
-GROUP BY symbol, exchange, toStartOfHour(ts);
+GROUP BY symbol, exchange, toStartOfHour(ts) AS ts;
