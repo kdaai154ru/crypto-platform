@@ -16,17 +16,19 @@ const clientId  = ref<string | null>(null)
 let   ws: WebSocket | null = null
 let   reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-const handlers   = new Map<string, Set<(data: unknown) => void>>()
-// FIX #8: Map<channel, Set<symbol>> — поддержка нескольких символов на один канал
+const handlers    = new Map<string, Set<(data: unknown) => void>>()
 const pendingSubs = new Map<string, Set<string>>() // channel → Set of symbols
 
 let initialized = false
+// FIX: wsUrl кэшируется после первого вызова useWsClient() внутри Nuxt-контекста
+let cachedWsUrl: string | null = null
 
 function connect() {
-  const { public: { wsUrl } } = useRuntimeConfig()
+  // cachedWsUrl гарантированно установлен до вызова connect()
+  const url = cachedWsUrl!
 
   if (ws && ws.readyState < 2) return
-  ws = new WebSocket(wsUrl as string)
+  ws = new WebSocket(url)
 
   ws.onopen = () => {
     connected.value = true
@@ -53,8 +55,6 @@ function connect() {
     try {
       const msg = JSON.parse(e.data)
       if (msg.type === 'welcome') { clientId.value = msg.clientId; return }
-      // FIX #1: msg.channel → msg.type
-      // ws-gateway sends { type: 'ticker', data: {...} }, no 'channel' field
       const cbs = handlers.get(msg.type)
       if (cbs) for (const cb of cbs) cb(msg.data)
     } catch { /* ignore */ }
@@ -62,9 +62,12 @@ function connect() {
 }
 
 export function useWsClient() {
-  // инициализируем один раз при первом вызове (client-side only)
   if (!initialized && import.meta.client) {
     initialized = true
+    // FIX: useRuntimeConfig() вызывается здесь — внутри Nuxt composable контекста,
+    // а не на уровне модуля где Nuxt-контекст ещё не доступен.
+    const { public: pub } = useRuntimeConfig()
+    cachedWsUrl = (pub.wsUrl as string) ?? 'ws://localhost:4000'
     connect()
   }
 
@@ -73,18 +76,13 @@ export function useWsClient() {
     const set = handlers.get(channel)!
 
     // Guard: do not add the same callback reference twice.
-    // This prevents duplicate updates when watch(immediate:true) fires
-    // on an already-open socket (connected=true at mount time).
     if (set.has(cb)) return
     set.add(cb)
 
-    // FIX #8: сохраняем все символы, а не только последний
     if (!pendingSubs.has(channel)) pendingSubs.set(channel, new Set())
     pendingSubs.get(channel)!.add(symbol)
 
     if (ws?.readyState === WebSocket.OPEN) {
-      // Broadcast channels need no subscribe message — gateway pushes them
-      // to all clients regardless. Only send for symbol-specific channels.
       if (!BROADCAST_CHANNELS.has(channel)) {
         ws.send(JSON.stringify({ type: 'subscribe', channels: [channel], symbol }))
       }
@@ -96,7 +94,6 @@ export function useWsClient() {
     if (!set) return
     set.delete(cb)
 
-    // отписываемся от сервера только если больше нет слушателей
     if (set.size === 0) {
       handlers.delete(channel)
       pendingSubs.delete(channel)
@@ -104,7 +101,6 @@ export function useWsClient() {
         ws.send(JSON.stringify({ type: 'unsubscribe', channels: [channel], symbol }))
       }
     } else {
-      // FIX #8: удаляем только этот символ
       pendingSubs.get(channel)?.delete(symbol)
     }
   }
@@ -118,6 +114,7 @@ if (import.meta.hot) {
     ws?.close()
     ws = null
     initialized = false
+    cachedWsUrl = null
     handlers.clear()
     pendingSubs.clear()
     if (reconnectTimer) clearTimeout(reconnectTimer)
