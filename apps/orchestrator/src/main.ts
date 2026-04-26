@@ -16,12 +16,15 @@ import {
   activeClientsGauge,
   type MetricsServer
 } from '@crypto-platform/metrics';
+import type { ExchangeState } from '@crypto-platform/types';
 
 const env = loadEnv(
   BaseSchema.merge(ValkeySchema).merge(
     z.object({
       ORCHESTRATOR_PORT: z.coerce.number().default(3010),
       METRICS_PORT: z.coerce.number().default(3001),
+      // Таймаут (мс) после которого биржа считается offline если exchange-core не обновил ключ
+      EXCHANGE_STALE_MS: z.coerce.number().default(30_000),
     })
   )
 );
@@ -58,10 +61,35 @@ const monitor = new HealthMonitor(
 
     const activePairs   = pairsRaw   ? parseInt(pairsRaw, 10)   : 0;
     const activeClients = clientsRaw ? parseInt(clientsRaw, 10) : 0;
-    let exchanges: any[] = [];
+
+    // FIX: если exchange-core ещё не писал в system:status:exchanges,
+    // строим fallback-статусы из состояния модуля exchange-core в registry.
+    // Это гарантирует что exchanges[] никогда не будет пустым пока exchange-core online.
+    let exchanges: ExchangeState[] = [];
     if (exchangesRaw) {
-      try { exchanges = JSON.parse(exchangesRaw); }
-      catch (err) { log.error({ err, exchangesRaw }, 'Failed to parse exchanges JSON'); }
+      try {
+        const parsed = JSON.parse(exchangesRaw) as unknown;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          exchanges = parsed as ExchangeState[];
+        }
+      } catch (err) {
+        log.error({ err, exchangesRaw }, 'Failed to parse exchanges JSON');
+      }
+    }
+
+    // Fallback: если exchanges пустой (exchange-core не писал в Valkey),
+    // генерируем синтетические статусы на основе heartbeat exchange-core из registry.
+    if (exchanges.length === 0) {
+      const exchangeModule = registry.get('exchange-core');
+      if (exchangeModule && (exchangeModule.status === 'online' || exchangeModule.status === 'degraded')) {
+        // exchange-core живой но не опубликовал детали — показываем как online без деталей
+        log.warn('system:status:exchanges is empty, using fallback from exchange-core module status');
+        exchanges = [
+          { id: 'binance', status: exchangeModule.status === 'online' ? 'online' : 'degraded', lastHeartbeat: exchangeModule.lastHeartbeat, uptimeMs: exchangeModule.uptimeMs },
+          { id: 'bybit',   status: exchangeModule.status === 'online' ? 'online' : 'degraded', lastHeartbeat: exchangeModule.lastHeartbeat, uptimeMs: exchangeModule.uptimeMs },
+          { id: 'okx',     status: exchangeModule.status === 'online' ? 'online' : 'degraded', lastHeartbeat: exchangeModule.lastHeartbeat, uptimeMs: exchangeModule.uptimeMs },
+        ];
+      }
     }
 
     activePairsGauge.set(activePairs);

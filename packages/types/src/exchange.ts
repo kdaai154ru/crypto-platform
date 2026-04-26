@@ -24,5 +24,8 @@ export interface ExchangeState {
   status: ExchangeStatus;
   lastHeartbeat: number;
   uptimeMs: number;
+  // Опциональные поля которые exchange-core может публиковать в system:status:exchanges
+  latencyMs?: number;
+  streamCount?: number;
   error?: string;
 }

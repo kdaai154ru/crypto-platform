@@ -33,10 +33,10 @@ export class StatusBroadcaster {
 
     try {
       await Promise.all([
-        // FIX #1: сохраняем только publicModules, а не полный ModuleState
-        // Было: JSON.stringify(modules) — утекали error/restarts/uptimeMs
         this.valkey.set('system:status:modules', JSON.stringify(publicModules), 'EX', 60),
-        this.valkey.set('system:status:exchanges', JSON.stringify(exchanges), 'EX', 60),
+        // FIX: кэшируем последний payload для initial-state push в ws-gateway
+        this.valkey.set('system:status:latest', json, 'EX', 120),
+        // FIX: НЕ перезаписываем system:status:exchanges — это зона ответственности exchange-core
         this.valkey.xadd(
           'system:status',
           'MAXLEN',

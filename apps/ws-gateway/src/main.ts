@@ -31,7 +31,6 @@ const env = loadEnv(
 );
 const log = createLogger('ws-gateway');
 
-// JWT auth is active only in production OR when explicitly enabled in dev
 const jwtRequired = env.NODE_ENV === 'production';
 
 if (jwtRequired && !env.JWT_SECRET) {
@@ -44,7 +43,6 @@ if (!jwtRequired) {
   log.warn('JWT_SECRET not set — WebSocket authentication disabled');
 }
 
-// Origin validation — CSWSH protection
 const allowedOrigins: Set<string> | null = env.WS_ALLOWED_ORIGINS
   ? new Set(env.WS_ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean))
   : null;
@@ -70,11 +68,13 @@ const valkeyOpts = {
   enableOfflineQueue: true,
 };
 const valkeyPub = new Valkey(valkeyOpts);
+const valkeyState = new Valkey(valkeyOpts); // FIX: отдельное соединение для чтения initial state
 const cm = new ConnectionManager();
 const subHdlr = new SubscriptionHandler(cm, valkeyPub, log);
 const fanout = new ValkeyStreams(valkeyOpts, cm, log);
 
 valkeyPub.on('error', (e: Error) => log.warn({ err: e.message }, 'valkeyPub error'));
+valkeyState.on('error', (e: Error) => log.warn({ err: e.message }, 'valkeyState error'));
 
 const MAX_RATE_ENTRIES = 10_000;
 const connectionCounts = new Map<string, { count: number; resetAt: number }>();
@@ -249,7 +249,6 @@ const app = uWS.App().ws('/*', {
     const remoteIp = getRemoteIp(ws);
     const ip = resolveClientIp(remoteIp, userData.xForwardedFor ?? '');
 
-    // JWT check: only enforce in production
     if (jwtRequired && env.JWT_SECRET) {
       const token = extractToken(
         userData.authHeader ?? '',
@@ -272,7 +271,6 @@ const app = uWS.App().ws('/*', {
       (ws as unknown as Record<string, unknown>).__userId = payload.sub;
       log.debug({ userId: payload.sub, ip }, 'Client authenticated');
     } else if (!jwtRequired) {
-      // development: assign a dev user id
       (ws as unknown as Record<string, unknown>).__userId = 'dev-user';
     }
 
@@ -302,6 +300,22 @@ const app = uWS.App().ws('/*', {
     ws.send(JSON.stringify({ type: 'welcome', clientId: id }));
     wsConnectionsTotal.inc();
     activeClientsGauge.set(cm.count());
+
+    // FIX: Initial state push — отправляем последний system:status новому клиенту сразу при подключении.
+    // Без этого клиент ждёт до 5 секунд до следующего тика оркестратора и видит offline.
+    valkeyState.get('system:status:latest').then((raw) => {
+      if (!raw) return;
+      try {
+        // Проверяем что клиент ещё жив перед отправкой
+        const client = cm.get(id);
+        if (client?.ws) {
+          client.ws.send(JSON.stringify({ type: 'system_status', data: JSON.parse(raw) }));
+          log.debug({ clientId: id }, 'Sent initial system_status to new client');
+        }
+      } catch (err) {
+        log.warn({ err, clientId: id }, 'Failed to send initial system_status');
+      }
+    }).catch(() => { /* no cached state yet — normal on first boot */ });
   },
 
   message(ws, msg, isBinary) {
@@ -378,6 +392,7 @@ async function start(): Promise<void> {
     clearInterval(cleanupInterval);
     await fanout.close();
     await valkeyPub.quit();
+    await valkeyState.quit();
     await metricsServer!.close();
     process.exit(0);
   };
