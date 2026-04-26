@@ -14,11 +14,14 @@ const BROADCAST_CHANNELS = new Set([
   'screener_update',
   'options_update',
   'etf_latest',
+  'alerts_triggered',
   // colon aliases (legacy / just in case)
   'system:status',
   'screener:update',
   'options:update',
   'etf:latest',
+  'alerts:triggered',
+  'alerts:trigger',
 ]);
 
 export class SubscriptionHandler {

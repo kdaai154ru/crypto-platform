@@ -15,6 +15,7 @@ import type { NormalizedTrade } from '@crypto-platform/types'
 import { useWidgetSubscription } from '~/composables/useWidgetSubscription'
 const props = withDefaults(defineProps<{ symbol?: string }>(), { symbol: 'BTC/USDT' })
 const trades = ref<NormalizedTrade[]>([])
-useWidgetSubscription(`whale-${props.symbol}`, [`trades:large`], props.symbol,
+// ws-gateway sends type='trades_large' (underscore), not 'trades:large'
+useWidgetSubscription(`whale-${props.symbol}`, [`trades_large`], props.symbol,
   (_, d) => { trades.value.push(d as NormalizedTrade); if (trades.value.length > 100) trades.value.shift() })
 </script>

@@ -24,7 +24,8 @@ function rsiBackground(v?: number) {
   return `rgba(${Math.round(norm*248)}, ${Math.round((1-norm)*200+50)}, 100, 0.5)`
 }
 
-useWidgetSubscription('heatmap-rsi', ['screener:update'], '', (_, d) => {
+// ws-gateway sends type='screener_update' (underscore), not 'screener:update'
+useWidgetSubscription('heatmap-rsi', ['screener_update'], '', (_, d) => {
   const arr = d as any[]
   for (const r of arr) {
     if (r.screener !== 'rsi' || r.tf !== '1h') continue

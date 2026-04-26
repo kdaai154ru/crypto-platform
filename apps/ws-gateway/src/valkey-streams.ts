@@ -23,6 +23,7 @@ const CHANNEL_MAP: Record<string, string> = {
   'options:update': 'options_update',
   'etf:latest': 'etf_latest',
   'system:status': 'system_status',
+  'alerts:trigger': 'alerts_triggered',
 };
 
 // Channels that must be delivered to ALL connected clients regardless of subscription
@@ -31,6 +32,7 @@ const BROADCAST_WS_CHANNELS = new Set([
   'screener_update',
   'options_update',
   'etf_latest',
+  'alerts_triggered',
 ]);
 
 const STREAM_KEYS = Object.keys(CHANNEL_MAP);

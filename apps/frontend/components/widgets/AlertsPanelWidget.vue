@@ -12,7 +12,8 @@
 <script setup lang="ts">
 import { useWidgetSubscription } from '~/composables/useWidgetSubscription'
 const alerts = ref<any[]>([])
-useWidgetSubscription('alerts-panel', ['alerts:triggered'], '', (_, d) => {
+// ws-gateway sends type='alerts_triggered' (underscore), not 'alerts:triggered'
+useWidgetSubscription('alerts-panel', ['alerts_triggered'], '', (_, d) => {
   alerts.value.unshift(d); if (alerts.value.length > 50) alerts.value.pop()
 })
 </script>
