@@ -13,7 +13,8 @@ const sysStore = useSystemStore()
 const { connected, subscribe } = useWsClient()
 
 function registerSystemStatus() {
-  subscribe('system:status', '', (d) => {
+  // ws-gateway sends type='system_status' (underscore), matches CHANNEL_MAP
+  subscribe('system_status', '', (d) => {
     sysStore.update(d as SystemStatusPayload)
   })
 }

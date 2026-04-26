@@ -19,5 +19,6 @@
 <script setup lang="ts">
 import { useWidgetSubscription } from '~/composables/useWidgetSubscription'
 const data = ref<any>(null)
-useWidgetSubscription('options-panel', ['options:update'], '', (_, d) => { data.value = d })
+// ws-gateway sends type='options_update' (underscore), not 'options:update'
+useWidgetSubscription('options-panel', ['options_update'], '', (_, d) => { data.value = d })
 </script>

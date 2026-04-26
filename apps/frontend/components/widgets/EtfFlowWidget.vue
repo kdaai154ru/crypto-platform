@@ -13,5 +13,6 @@
 <script setup lang="ts">
 import { useWidgetSubscription } from '~/composables/useWidgetSubscription'
 const latest = ref<any>(null)
-useWidgetSubscription('etf-flow', ['etf:latest'], '', (_, d) => { latest.value = d })
+// ws-gateway sends type='etf_latest' (underscore), not 'etf:latest'
+useWidgetSubscription('etf-flow', ['etf_latest'], '', (_, d) => { latest.value = d })
 </script>

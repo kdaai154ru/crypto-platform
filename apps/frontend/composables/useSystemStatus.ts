@@ -6,7 +6,8 @@ export function useSystemStatus() {
   const status = ref<SystemStatusPayload|null>(null)
   const { subscribe } = useWsClient()
 
-  subscribe('system:status', '', (data) => {
+  // ws-gateway sends type='system_status' (underscore), not 'system:status'
+  subscribe('system_status', '', (data) => {
     status.value = data as SystemStatusPayload
   })
   return { status }

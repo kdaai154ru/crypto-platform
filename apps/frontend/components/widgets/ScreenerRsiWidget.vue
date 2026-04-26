@@ -40,7 +40,8 @@ const rsiColor = (v: number) =>
   v <= 30 ? 'bg-green-500/20 text-green-400' :
   'text-muted'
 
-useWidgetSubscription('screener-rsi', ['screener:update'], '',
+// ws-gateway sends type='screener_update' (underscore), not 'screener:update'
+useWidgetSubscription('screener-rsi', ['screener_update'], '',
   (_ch, data) => {
     const arr = data as ScreenerRow[]
     for (const r of arr) {
