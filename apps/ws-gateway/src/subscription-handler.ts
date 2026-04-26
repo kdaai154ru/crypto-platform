@@ -3,6 +3,18 @@ import type Valkey from 'iovalkey';
 import { ConnectionManager, MAX_SUBSCRIPTIONS_PER_CLIENT } from './connection-manager.js';
 import type { Logger } from '@crypto-platform/logger';
 
+// Broadcast channels that do not require a symbol
+const BROADCAST_CHANNELS = new Set([
+  'system_status',
+  'system:status',
+  'screener_update',
+  'screener:update',
+  'options_update',
+  'options:update',
+  'etf_latest',
+  'etf:latest',
+]);
+
 export class SubscriptionHandler {
   constructor(
     private readonly connectionManager: ConnectionManager,
@@ -10,20 +22,10 @@ export class SubscriptionHandler {
     private readonly log: Logger
   ) {}
 
-  /**
-   * Подписывает клиента на указанные каналы.
-   * Если каналы не указаны, подписка отменяется.
-   * Лимит подписок на клиента: MAX_SUBSCRIPTIONS_PER_CLIENT (50).
-   */
   subscribe(id: string, channels: string[], symbol?: string): void {
     if (!channels || channels.length === 0) return;
 
-    // FIX: guard empty/missing symbol — do not publish sub:request without a valid symbol
     const sym = symbol?.trim();
-    if (!sym) {
-      this.log.warn({ clientId: id, channels }, 'subscribe: symbol is empty or missing, skipping');
-      return;
-    }
 
     const client = this.connectionManager.get(id);
     if (!client) {
@@ -32,6 +34,14 @@ export class SubscriptionHandler {
     }
 
     for (const channel of channels) {
+      const isBroadcast = BROADCAST_CHANNELS.has(channel);
+
+      // Non-broadcast channels require a symbol
+      if (!isBroadcast && !sym) {
+        this.log.warn({ clientId: id, channel }, 'subscribe: symbol is empty or missing for non-broadcast channel, skipping');
+        continue;
+      }
+
       const currentCount = this.connectionManager.subscriptionCount(id);
       if (currentCount >= MAX_SUBSCRIPTIONS_PER_CLIENT) {
         this.log.warn(
@@ -43,22 +53,24 @@ export class SubscriptionHandler {
 
       const added = this.connectionManager.addSubscription(id, channel);
       if (added) {
-        // FIX: use viewerId (not clientId) to match subscription-core JSON contract
-        this.valkey.publish(
-          'sub:request',
-          JSON.stringify({
-            viewerId: id,
-            channel,
-            symbol: sym,
-          })
-        ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:request'));
+        if (isBroadcast) {
+          // Broadcast channels: just register the subscription locally,
+          // no sub:request needed — data is pushed to all clients
+          this.log.debug({ clientId: id, channel }, 'Registered broadcast channel subscription');
+        } else {
+          this.valkey.publish(
+            'sub:request',
+            JSON.stringify({
+              viewerId: id,
+              channel,
+              symbol: sym,
+            })
+          ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:request'));
+        }
       }
     }
   }
 
-  /**
-   * Отписывает клиента от указанных каналов.
-   */
   unsubscribe(id: string, channels: string[], symbol?: string): void {
     if (!channels || channels.length === 0) return;
 
@@ -69,8 +81,8 @@ export class SubscriptionHandler {
 
     for (const channel of channels) {
       this.connectionManager.removeSubscription(id, channel);
-      // FIX: use viewerId to match subscription-core contract; skip if no symbol
-      if (sym) {
+      const isBroadcast = BROADCAST_CHANNELS.has(channel);
+      if (!isBroadcast && sym) {
         this.valkey.publish(
           'sub:release',
           JSON.stringify({
@@ -83,9 +95,6 @@ export class SubscriptionHandler {
     }
   }
 
-  /**
-   * Отписывает клиента от всех каналов (при дисконнекте).
-   */
   unsubscribeAll(id: string): void {
     const client = this.connectionManager.get(id);
     if (!client) return;
@@ -93,14 +102,16 @@ export class SubscriptionHandler {
     const channels = Array.from(client.subscriptions);
     for (const channel of channels) {
       this.connectionManager.removeSubscription(id, channel);
-      // FIX: viewerId key + no symbol needed for cleanup on disconnect
-      this.valkey.publish(
-        'sub:release',
-        JSON.stringify({
-          viewerId: id,
-          channel,
-        })
-      ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:release'));
+      const isBroadcast = BROADCAST_CHANNELS.has(channel);
+      if (!isBroadcast) {
+        this.valkey.publish(
+          'sub:release',
+          JSON.stringify({
+            viewerId: id,
+            channel,
+          })
+        ).catch((err: Error) => this.log.error({ err, channel }, 'Failed to publish sub:release'));
+      }
     }
   }
 }
