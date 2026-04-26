@@ -20,7 +20,7 @@
         <div style="font-weight:600;color:var(--color-text);margin-bottom:4px">{{ ex.id }}</div>
         <div>Status: <span :style="exTextStyle(ex.status)">{{ ex.status }}</span></div>
         <div>Latency: <span class="num">{{ ex.latencyMs }}ms</span></div>
-        <div>Streams: <span class="num">{{ ex.streamsActive }}</span></div>
+        <div>Streams: <span class="num">{{ ex.streamCount }}</span></div>
         <div v-if="ex.error" style="color:var(--color-error);margin-top:3px">{{ ex.error }}</div>
       </div>
     </div>
@@ -67,20 +67,21 @@ const exchanges = computed(() => sys.payload?.exchanges ?? [])
 
 const systemDotStatus = computed(() => {
   if (!sys.payload) return 'unknown'
-  if (modules.value.some(m => m.status === 'offline'))    return 'offline'
+  if (modules.value.some(m => m.status === 'offline'))                               return 'offline'
   if (modules.value.some(m => m.status === 'degraded' || m.status === 'restarting')) return 'degraded'
   return 'online'
 })
 
+// FIX: ExchangeStatus = 'online' | 'degraded' | 'offline' — was incorrectly checking 'connected'
 function exDotClass(s: ExchangeStatus | string) {
-  if (s === 'connected') return 'online'
-  if (s === 'reconnecting' || s === 'degraded') return 'degraded'
+  if (s === 'online')    return 'online'
+  if (s === 'degraded')  return 'degraded'
   return 'offline'
 }
 
-function exTextStyle(s: string) {
-  if (s === 'connected') return 'color:var(--color-success)'
-  if (s === 'reconnecting' || s === 'degraded') return 'color:var(--color-warning)'
+function exTextStyle(s: ExchangeStatus | string) {
+  if (s === 'online')   return 'color:var(--color-success)'
+  if (s === 'degraded') return 'color:var(--color-warning)'
   return 'color:var(--color-error)'
 }
 
