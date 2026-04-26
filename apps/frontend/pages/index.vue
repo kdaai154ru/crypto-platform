@@ -4,28 +4,28 @@
 </template>
 
 <script setup lang="ts">
-import { watch, onMounted } from 'vue'
+import { watch, onUnmounted } from 'vue'
 import { useSystemStore } from '~/stores/system.store'
 import { useWsClient } from '~/composables/useWsClient'
 import type { SystemStatusPayload } from '@crypto-platform/types'
 
 const sysStore = useSystemStore()
-const { connected, subscribe } = useWsClient()
+const { connected, subscribe, unsubscribe } = useWsClient()
 
-function registerSystemStatus() {
-  // ws-gateway sends type='system_status' (underscore), matches CHANNEL_MAP
-  subscribe('system_status', '', (d) => {
-    sysStore.update(d as SystemStatusPayload)
-  })
+function handler(d: unknown) {
+  sysStore.update(d as SystemStatusPayload)
 }
 
-// Register on mount in case WS is already connected (e.g. hot reload)
-onMounted(() => {
-  if (connected.value) registerSystemStatus()
-})
+// immediate:true fires once right away (handles already-connected case)
+// and again whenever connected flips true after reconnect.
+// Single watch replaces the previous onMounted+watch combo that
+// registered two identical callbacks on the very first load.
+watch(
+  connected,
+  (v) => { if (v) subscribe('system_status', '', handler) },
+  { immediate: true }
+)
 
-// Also register whenever connection is established / re-established
-watch(connected, (v) => {
-  if (v) registerSystemStatus()
-})
+// Clean up on page teardown to prevent handler accumulation
+onUnmounted(() => unsubscribe('system_status', '', handler))
 </script>
