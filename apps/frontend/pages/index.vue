@@ -4,7 +4,7 @@
 </template>
 
 <script setup lang="ts">
-import { watch } from 'vue'
+import { watch, onMounted } from 'vue'
 import { useSystemStore } from '~/stores/system.store'
 import { useWsClient } from '~/composables/useWsClient'
 import type { SystemStatusPayload } from '@crypto-platform/types'
@@ -12,10 +12,19 @@ import type { SystemStatusPayload } from '@crypto-platform/types'
 const sysStore = useSystemStore()
 const { connected, subscribe } = useWsClient()
 
-watch(connected, (v) => {
-  if (!v) return
+function registerSystemStatus() {
   subscribe('system:status', '', (d) => {
     sysStore.update(d as SystemStatusPayload)
   })
-}, { immediate: true })
+}
+
+// Register on mount in case WS is already connected (e.g. hot reload)
+onMounted(() => {
+  if (connected.value) registerSystemStatus()
+})
+
+// Also register whenever connection is established / re-established
+watch(connected, (v) => {
+  if (v) registerSystemStatus()
+})
 </script>
