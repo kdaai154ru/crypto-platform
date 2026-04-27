@@ -10,18 +10,29 @@ export const useLayoutStore = defineStore('layout', () => {
   const { load, save } = useLayoutPersistence()
 
   function init() {
-    layouts.value = load()
-    if (!layouts.value.length) {
-      const def = defaultLayout()
-      layouts.value = [def]
-      active.value  = def.id
+    const stored = load()
+    // Если нет сохранённого или версия старая — сбрасываем на дефолт
+    if (!stored.length) {
+      reset()
     } else {
-      active.value = layouts.value[0]!.id
+      layouts.value = stored
+      active.value  = stored[0]!.id
     }
+  }
+
+  function reset() {
+    const def = defaultLayout()
+    layouts.value = [def]
+    active.value  = def.id
+    save(layouts.value)
   }
 
   function currentLayout(): DashboardLayout | undefined {
     return layouts.value.find(l => l.id === active.value)
+  }
+
+  function currentWidgets(): WidgetLayout[] {
+    return currentLayout()?.breakpoints.lg ?? []
   }
 
   function updateWidgets(lg: WidgetLayout[]) {
@@ -32,15 +43,58 @@ export const useLayoutStore = defineStore('layout', () => {
     save(layouts.value)
   }
 
+  /**
+   * Добавить виджет. Если виджет с таким type уже есть — просто
+   * делаем его visible (toggle on), не дублируем.
+   */
   function addWidget(w: WidgetLayout) {
     const cur = currentLayout()
     if (!cur) return
+    const existing = cur.breakpoints.lg.find(it => it.type === w.type)
+    if (existing) {
+      existing.visible = true
+      cur.updatedAt = Date.now()
+      save(layouts.value)
+      return
+    }
     const maxY = cur.breakpoints.lg.reduce((m, it) => Math.max(m, it.y + it.h), 0)
     cur.breakpoints.lg.push({ ...w, y: maxY })
     updateWidgets(cur.breakpoints.lg)
   }
 
-  /** Обновить settings конкретного виджета по id (например, сменить symbol) */
+  /**
+   * Toggle visible для виджета по type.
+   * Если виджета нет — добавляет как новый.
+   */
+  function toggleWidget(type: string, def: Omit<WidgetLayout, 'i' | 'x' | 'y' | 'visible'>) {
+    const cur = currentLayout()
+    if (!cur) return
+    const existing = cur.breakpoints.lg.find(it => it.type === type)
+    if (existing) {
+      existing.visible = !existing.visible
+      cur.updatedAt = Date.now()
+      save(layouts.value)
+    } else {
+      const maxY = cur.breakpoints.lg.reduce((m, it) => Math.max(m, it.y + it.h), 0)
+      cur.breakpoints.lg.push({
+        ...def,
+        i: `${type}-${Date.now()}`,
+        type,
+        x: 0,
+        y: maxY,
+        visible: true,
+      })
+      updateWidgets(cur.breakpoints.lg)
+    }
+  }
+
+  function isWidgetVisible(type: string): boolean {
+    const cur = currentLayout()
+    if (!cur) return false
+    const w = cur.breakpoints.lg.find(it => it.type === type)
+    return w?.visible ?? false
+  }
+
   function updateWidgetSettings(widgetId: string, patch: Record<string, unknown>) {
     const cur = currentLayout()
     if (!cur) return
@@ -72,5 +126,9 @@ export const useLayoutStore = defineStore('layout', () => {
     }
   }
 
-  return { layouts, active, init, currentLayout, updateWidgets, addWidget, updateWidgetSettings }
+  return {
+    layouts, active,
+    init, reset, currentLayout, currentWidgets,
+    updateWidgets, addWidget, toggleWidget, isWidgetVisible, updateWidgetSettings,
+  }
 })

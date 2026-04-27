@@ -6,7 +6,7 @@
     <div class="dashboard-main">
       <div v-if="ready" class="dash-grid">
         <div
-          v-for="item in gridItems"
+          v-for="item in visibleItems"
           :key="item.i"
           class="dash-cell"
           :style="cellStyle(item)"
@@ -27,8 +27,9 @@ const layoutStore = useLayoutStore()
 const editMode    = ref(false)
 const ready       = ref(false)
 
-const gridItems = computed<WidgetLayout[]>(
-  () => layoutStore.currentLayout()?.breakpoints.lg ?? []
+// Только visible: true виджеты рендерим
+const visibleItems = computed<WidgetLayout[]>(
+  () => (layoutStore.currentLayout()?.breakpoints.lg ?? []).filter(w => w.visible !== false)
 )
 
 const ROW_H = 80   // px per row unit
