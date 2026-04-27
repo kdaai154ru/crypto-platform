@@ -11,7 +11,10 @@
     "lint": "turbo run lint",
     "test": "turbo run test",
     "frontend:dev": "turbo dev --filter=@crypto-platform/frontend",
-    "frontend:build": "turbo build --filter=@crypto-platform/frontend"
+    "frontend:build": "turbo build --filter=@crypto-platform/frontend",
+    "start:dev": "powershell -ExecutionPolicy Bypass -File scripts/start.ps1 -Env development",
+    "start:prod": "powershell -ExecutionPolicy Bypass -File scripts/start.ps1 -Env production",
+    "stop": "powershell -ExecutionPolicy Bypass -File scripts/stop.ps1"
   },
   "devDependencies": {
     "turbo": "2.5.4",
