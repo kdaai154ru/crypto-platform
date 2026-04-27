@@ -1,7 +1,6 @@
 # ============================================================
-# docker-compose.yml  —  crypto-platform
-# Расположение:  <корень проекта>/docker-compose.yml
-# Переменные подгружаются из .env в этой же папке
+# docker-compose.yml  --  crypto-platform
+# Variables loaded from .env in the same directory
 # ============================================================
 
 
@@ -65,15 +64,17 @@ services:
     healthcheck:
       test:
         - "CMD-SHELL"
-        - >
-          wget -qO- --header "X-ClickHouse-User: ${CLICKHOUSE_USER:-default}"
-          --header "X-ClickHouse-Key: ${CLICKHOUSE_PASSWORD}"
-          "http://localhost:8123/?query=SELECT%201"
-          | grep -q 1
+        - >-
+          clickhouse-client
+          --host=localhost
+          --port=9000
+          --user=${CLICKHOUSE_USER:-default}
+          --password=${CLICKHOUSE_PASSWORD}
+          --query="SELECT 1"
       interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     ulimits:
       nofile:
         soft: 262144
