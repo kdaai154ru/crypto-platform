@@ -6,7 +6,7 @@
       <span class="feed-sym">{{ symbolStore.activeSymbol }}</span>
     </div>
     <div class="feed-list">
-      <div v-for="w in whales" :key="w.id" class="whale-row">
+      <div v-for="w in whales" :key="w._key" class="whale-row">
         <span :class="['whale-side', w.side]">{{ w.side.toUpperCase() }}</span>
         <span class="whale-pair">{{ w.symbol }}</span>
         <span class="whale-qty">${{ fmtNum(w.usdValue) }}</span>
@@ -22,10 +22,17 @@ import { ref, watch, onUnmounted } from 'vue'
 import { useWsClient } from '~/composables/useWsClient'
 import { useSymbolStore } from '~/stores/symbol.store'
 
+// Отвечает NormalizedTrade + _key для v-for
 interface WhaleTrade {
-  id: string; symbol: string; side: 'buy' | 'sell'
-  qty: number; price: number; usdValue: number
-  exchange: string; ts: number
+  _key:     string
+  symbol:   string
+  side:     'buy' | 'sell'
+  qty:      number
+  price:    number
+  usdValue: number
+  exchange: string
+  ts:       number
+  tradeId?: string
 }
 
 const symbolStore = useSymbolStore()
@@ -34,15 +41,20 @@ const whales = ref<WhaleTrade[]>([])
 const MAX = 50
 let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
+let _counter = 0
 
 function mountSub(sym: string) {
   if (currentCb) { unsubscribe('whale_event', currentSymbol, currentCb); currentCb = null }
   currentSymbol = sym
   whales.value  = []
   currentCb = (d: unknown) => {
-    const w = d as WhaleTrade
-    if (w.symbol !== sym) return
-    whales.value.unshift(w)
+    const raw = d as { symbol: string; side: 'buy'|'sell'; qty: number; price: number; usdValue: number; exchange: string; ts: number; tradeId?: string }
+    if (raw.symbol !== sym) return
+    const entry: WhaleTrade = {
+      ...raw,
+      _key: raw.tradeId ?? `${raw.ts}-${++_counter}`,
+    }
+    whales.value.unshift(entry)
     if (whales.value.length > MAX) whales.value.length = MAX
   }
   subscribe('whale_event', sym, currentCb)
