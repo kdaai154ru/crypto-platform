@@ -1,5 +1,5 @@
 // apps/frontend/composables/useWsClient.ts
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 
 // Must stay in sync with BROADCAST_WS_CHANNELS in apps/ws-gateway/src/valkey-streams.ts.
 const BROADCAST_CHANNELS = new Set([
@@ -19,19 +19,27 @@ let   reconnectTimer: ReturnType<typeof setTimeout> | null = null
 const handlers    = new Map<string, Set<(data: unknown) => void>>()
 const pendingSubs = new Map<string, Set<string>>()
 
-// Callbacks registered via onReady() — called immediately if already
-// connected, otherwise queued and flushed on the next successful connect.
-const readyQueue = new Set<() => void>()
+// FIX: разделяем one-shot очередь (readyQueue) и постоянные коллбэки (persistentReady).
+// readyQueue — вызываются один раз при первом connect, затем очищаются.
+// persistentReady — вызываются при КАЖДОМ reconnect (нужно для broadcast-каналов
+// которые не восстанавливаются через pendingSubs т.к. не шлют subscribe на сервер).
+const readyQueue     = new Set<() => void>()
+const persistentReady = new Set<() => void>()
 
 let initialized = false
 let connecting  = false
 let cachedWsUrl: string | null = null
 
 function flushReadyQueue() {
+  // One-shot callbacks
   for (const cb of readyQueue) {
     try { cb() } catch {/* ignore */}
   }
   readyQueue.clear()
+  // Persistent callbacks (broadcast re-mount on every reconnect)
+  for (const cb of persistentReady) {
+    try { cb() } catch {/* ignore */}
+  }
 }
 
 function connect() {
@@ -50,7 +58,7 @@ function connect() {
         ws!.send(JSON.stringify({ type: 'subscribe', channels: [channel], symbol }))
       }
     }
-    // Fire all pending onReady callbacks
+    // Fire ready callbacks
     flushReadyQueue()
   }
 
@@ -83,20 +91,32 @@ export function useWsClient() {
   }
 
   /**
-   * Register a callback to run once the WS is open.
-   * - If already connected: runs synchronously on next microtask tick.
-   * - If not yet connected: queued and called on first successful open.
-   * Returns an unregister function (call it onUnmounted).
+   * Register a one-shot callback — runs once when WS is open.
+   * Returns an unregister function.
    */
   function onReady(cb: () => void): () => void {
     if (!import.meta.client) return () => {}
     if (connected.value) {
-      // Already open — schedule for next tick so caller's setup is complete
       Promise.resolve().then(cb)
     } else {
       readyQueue.add(cb)
     }
     return () => readyQueue.delete(cb)
+  }
+
+  /**
+   * FIX: Register a persistent callback — runs on EVERY (re)connect.
+   * Used by broadcast-channel widgets so they re-mount subscriptions
+   * after WS reconnects without needing an explicit server subscribe.
+   * Returns an unregister function.
+   */
+  function onEveryReady(cb: () => void): () => void {
+    if (!import.meta.client) return () => {}
+    if (connected.value) {
+      Promise.resolve().then(cb)
+    }
+    persistentReady.add(cb)
+    return () => persistentReady.delete(cb)
   }
 
   function subscribe(channel: string, symbol: string, cb: (d: unknown) => void) {
@@ -131,7 +151,7 @@ export function useWsClient() {
     }
   }
 
-  return { connected, clientId, subscribe, unsubscribe, onReady }
+  return { connected, clientId, subscribe, unsubscribe, onReady, onEveryReady }
 }
 
 // HMR cleanup
@@ -145,6 +165,7 @@ if (import.meta.hot) {
     handlers.clear()
     pendingSubs.clear()
     readyQueue.clear()
+    persistentReady.clear()
     if (reconnectTimer) clearTimeout(reconnectTimer)
   })
 }

@@ -38,18 +38,17 @@
 import { ref } from 'vue'
 import { useLayoutStore } from '~/stores/layout.store'
 
-// Teleport рендерит фрагмент как корневой узел — Vue не может автоматически
-// наследовать listeners. inheritAttrs: false + emits в defineOptions убирает warn.
-// ВАЖНО: defineEmits<{ close: [] }>() в TypeScript-generic форме не регистрирует
-// событие в runtime-списке emits → Vue всё равно видит onClose как
-// «посторонний» listener. Решение: явно объявить emits через defineOptions.
-defineOptions({
-  inheritAttrs: false,
-  emits: ['close'],
-})
+// FIX: убрано defineOptions({ emits: ['close'] }) — оно конфликтовало с defineEmits
+// и вызывало Vue warn «Extraneous non-emits event listeners».
+// Единственный корректный способ объявить emits в <script setup> — только defineEmits.
+// inheritAttrs: false нужен т.к. Teleport рендерит fragment как корневой узел —
+// Vue не может автонаследовать listeners и выдаёт warn без этого флага.
+defineOptions({ inheritAttrs: false })
 
 defineProps<{ open: boolean }>()
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{
+  (e: 'close'): void
+}>()
 
 const layoutStore  = useLayoutStore()
 const confirmReset = ref(false)

@@ -4,7 +4,6 @@
     <DashboardToolbar />
     <DashboardStatusBar />
     <div class="dashboard-main">
-      <!-- outer wrapper всегда в DOM — gridRef получает ширину сразу -->
       <div class="dash-grid-wrapper" ref="gridRef">
         <div v-if="ready" class="native-grid" :style="gridStyle">
 
@@ -15,6 +14,9 @@
             :style="cellStyle(ghost.x, ghost.y, ghost.w, ghost.h)"
           />
 
+          <!-- FIX: во время drag/resize все ячейки кроме активной получают
+               pointer-events:none — это предотвращает перехват mousemove/mouseup
+               соседними элементами и позволяет курсору свободно двигаться. -->
           <div
             v-for="item in visibleItems"
             :key="item.i"
@@ -23,6 +25,7 @@
               'is-edit':     layoutStore.editMode,
               'is-dragging': drag?.id === item.i,
               'is-resizing': resize?.id === item.i,
+              'is-blocked':  (drag !== null || resize !== null) && drag?.id !== item.i && resize?.id !== item.i,
             }"
             :style="activeCellStyle(item)"
           >
@@ -47,21 +50,17 @@ import type { WidgetLayout } from '@crypto-platform/types'
 
 const layoutStore = useLayoutStore()
 const ready       = ref(false)
-// gridRef — на внешнем div, который ВСЕГДА в DOM (v-if убран с него)
 const gridRef     = ref<HTMLElement | null>(null)
 
-// Сетка: 12 колонок, высота строки 80px, зазор 6px
 const COLS  = 12
 const ROW_H = 80
 const GAP   = 6
 const MIN_W = 2
 const MIN_H = 2
 
-// Реальная ширина контейнера — обновляется через ResizeObserver
 const containerW = ref(0)
 let ro: ResizeObserver | null = null
 
-// ─── Типы состояния drag/resize ───────────────────────────────────────────────
 interface DragState {
   id: string
   startMouseX: number; startMouseY: number
@@ -82,13 +81,11 @@ const drag   = ref<DragState | null>(null)
 const resize = ref<ResizeState | null>(null)
 const ghost  = ref<GhostRect | null>(null)
 
-// ─── Данные сетки ─────────────────────────────────────────────────────────────
 const visibleItems = computed<WidgetLayout[]>(() =>
   (layoutStore.currentLayout()?.breakpoints.lg ?? []).filter(w => w.visible !== false)
 )
 
 const gridStyle = computed(() => {
-  // Учитываем ghost при расчёте высоты — чтобы сетка растягивалась во время drag
   const fromStore = visibleItems.value.reduce((m, w) => Math.max(m, w.y + w.h), 0)
   const fromGhost = ghost.value ? ghost.value.y + ghost.value.h : 0
   const rows = Math.max(fromStore, fromGhost)
@@ -99,7 +96,6 @@ const gridStyle = computed(() => {
   }
 })
 
-// ─── Вычисление ширины колонки ────────────────────────────────────────────────
 function getColW(): number {
   const w = containerW.value > 0
     ? containerW.value
@@ -107,7 +103,6 @@ function getColW(): number {
   return (w - GAP * (COLS + 1)) / COLS
 }
 
-// ─── CSS: ячейка → абсолютное позиционирование ───────────────────────────────
 function cellStyle(x: number, y: number, w: number, h: number) {
   const colW = getColW()
   return {
@@ -122,8 +117,6 @@ function cellStyle(x: number, y: number, w: number, h: number) {
   }
 }
 
-// ─── Стиль ячейки: во время drag/resize показываем позицию ghost ──────────────
-// Это ключевое исправление: без него виджет стоит на месте пока тащишь
 function activeCellStyle(item: WidgetLayout) {
   const isDragging = drag.value?.id  === item.i
   const isResizing = resize.value?.id === item.i
@@ -133,7 +126,6 @@ function activeCellStyle(item: WidgetLayout) {
   return cellStyle(item.x, item.y, item.w, item.h)
 }
 
-// ─── Snap px → grid-unit ──────────────────────────────────────────────────────
 function snapX(px: number, colW: number): number {
   return Math.max(0, Math.min(COLS - 1, Math.round(px / (colW + GAP))))
 }
@@ -147,7 +139,6 @@ function snapH(px: number): number {
   return Math.max(MIN_H, Math.round((px + GAP) / (ROW_H + GAP)))
 }
 
-// ─── Коллизии: сдвигаем перекрывающиеся виджеты вниз ─────────────────────────
 function resolveCollisions(items: WidgetLayout[], moved: WidgetLayout): WidgetLayout[] {
   const sorted = [...items].sort((a, b) => a.y - b.y || a.x - b.x)
   const result: WidgetLayout[] = []
@@ -169,7 +160,6 @@ function overlaps(a: WidgetLayout, b: WidgetLayout): boolean {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
 }
 
-// ─── Drag start ───────────────────────────────────────────────────────────────
 function startDrag(e: MouseEvent, id: string) {
   if (!layoutStore.editMode) return
   const item = visibleItems.value.find(w => w.i === id)
@@ -188,7 +178,6 @@ function startDrag(e: MouseEvent, id: string) {
   document.body.style.userSelect = 'none'
 }
 
-// ─── Resize start ─────────────────────────────────────────────────────────────
 function startResize(e: MouseEvent, id: string) {
   if (!layoutStore.editMode) return
   const item = visibleItems.value.find(w => w.i === id)
@@ -208,7 +197,6 @@ function startResize(e: MouseEvent, id: string) {
   document.body.style.userSelect = 'none'
 }
 
-// ─── Mouse move ───────────────────────────────────────────────────────────────
 function onMouseMove(e: MouseEvent) {
   if (drag.value) {
     const d   = drag.value
@@ -231,7 +219,6 @@ function onMouseMove(e: MouseEvent) {
   }
 }
 
-// ─── Mouse up: фиксируем новое положение ─────────────────────────────────────
 function onMouseUp() {
   if (!drag.value && !resize.value) return
 
@@ -262,7 +249,6 @@ onMounted(async () => {
 
   layoutStore.init()
 
-  // gridRef теперь на внешнем div (всегда в DOM) — можно измерить сразу
   await nextTick()
 
   if (gridRef.value) {
@@ -305,7 +291,11 @@ onUnmounted(() => {
 .grid-cell.is-resizing {
   z-index:  100;
   opacity:  0.85;
-  /* виджет двигается без transition пока тащим (transition=none стоит в activeCellStyle) */
+}
+/* FIX: блокируем pointer-events на всех ячейках кроме активной во время drag/resize.
+   Без этого соседние виджеты перехватывали mousemove и resize handle терял курсор. */
+.grid-cell.is-blocked {
+  pointer-events: none;
 }
 </style>
 
@@ -324,7 +314,6 @@ onUnmounted(() => {
 .dash-grid-wrapper {
   padding:     0;
   user-select: none;
-  /* min-height нужен чтобы ResizeObserver сразу получил ненулевую ширину */
   min-height:  4px;
 }
 </style>

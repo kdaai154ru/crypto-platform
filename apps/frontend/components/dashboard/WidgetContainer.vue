@@ -34,9 +34,10 @@
       </div>
     </div>
 
-    <!-- body: overflow:hidden убран отсюда — перенесён на inner-wrap -->
-    <!-- resize handle должен выходить за пределы widget-body, поэтому -->
-    <!-- .widget-body теперь overflow:visible, а inner-wrap скрывает контент -->
+    <!-- FIX: widget-body теперь position:relative + overflow:visible.
+         widget-body-inner скрывает контент виджета (overflow:hidden).
+         resize-handle вынесен ПОСЛЕ widget-body-inner — он НЕ внутри
+         overflow:hidden контейнера, поэтому не обрезается и всегда кликабелен. -->
     <div class="widget-body">
       <div class="widget-body-inner">
         <component
@@ -47,7 +48,8 @@
         <component :is="widgetComponent" v-else />
       </div>
 
-      <!-- resize handle — position:absolute от .widget-body (overflow:visible) -->
+      <!-- resize handle: position:absolute от .widget-body (overflow:visible),
+           НЕ внутри .widget-body-inner (overflow:hidden) — это ключевой фикс. -->
       <div
         v-if="editMode"
         class="widget-resize-handle"
@@ -150,7 +152,7 @@ const widgetProps = computed(() => props.item.settings ?? {})
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  /* overflow:hidden убран — resize handle должен быть виден поверх края */
+  /* overflow:visible — resize handle должен выступать за края */
   overflow: visible;
   position: relative;
 }
@@ -208,7 +210,7 @@ const widgetProps = computed(() => props.item.settings ?? {})
 .status-dot.degraded { background: var(--color-warning); }
 .status-dot.offline  { background: var(--color-error); }
 
-/* widget-body: flex-grow, overflow:visible чтобы handle не обрезался */
+/* widget-body: flex-grow, overflow:visible чтобы resize handle не обрезался */
 .widget-body {
   flex: 1;
   overflow: visible;
@@ -218,13 +220,14 @@ const widgetProps = computed(() => props.item.settings ?? {})
   flex-direction: column;
 }
 
-/* inner-wrap: именно здесь скрываем содержимое виджета */
+/* widget-body-inner: скрывает содержимое виджета, НЕ содержит resize handle */
 .widget-body-inner {
   flex: 1;
   overflow: hidden;
   min-height: 0;
   position: relative;
-  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  /* FIX: убран border-radius — он создавал stacking context и обрезал
+     resize handle даже при overflow:visible на родителе */
 }
 
 .widget-empty {
@@ -236,8 +239,9 @@ const widgetProps = computed(() => props.item.settings ?? {})
   font-size: var(--text-sm);
 }
 
-/* resize handle: position:absolute от .widget-body (overflow:visible) */
-/* z-index:200 чтобы быть поверх соседних grid-cell'ов */
+/* FIX: resize handle вынесен за пределы widget-body-inner (overflow:hidden),
+   поэтому он всегда рендерится поверх и принимает mousedown корректно.
+   z-index:200 + pointer-events:all гарантируют кликабельность. */
 .widget-resize-handle {
   position: absolute;
   bottom: -2px;
@@ -252,6 +256,7 @@ const widgetProps = computed(() => props.item.settings ?? {})
   border-radius: 0 0 var(--radius-md) 0;
   background: var(--color-primary);
   z-index: 200;
+  pointer-events: all;
   opacity: 0;
   transition: opacity 150ms;
 }
