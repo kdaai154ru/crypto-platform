@@ -41,18 +41,19 @@ import { useLayoutStore } from '~/stores/layout.store'
 
 // Компонент рендерит <Teleport> как корень (fragment) →
 // Vue не может унаследовать listeners автоматически.
-// inheritAttrs: false убирает Vue warn.
+// inheritAttrs: false + явный defineEmits убирает Vue warn.
 defineOptions({ inheritAttrs: false })
 
 defineProps<{ open: boolean }>()
 
+// 'add' убран: Toolbar не использует этот emit,
+// toggleWidget обновляет store реактивно — перерисовка происходит автоматически.
 const emit = defineEmits<{
   close: []
-  add:   [type: string]
 }>()
 
-const layoutStore   = useLayoutStore()
-const confirmReset  = ref(false)
+const layoutStore  = useLayoutStore()
+const confirmReset = ref(false)
 
 const WIDGETS = [
   { type: 'chart',           icon: '📈', label: 'Price Chart',       description: 'Candlestick + indicators',     w: 9,  h: 8  },
@@ -74,8 +75,8 @@ function isActive(type: string) {
 }
 
 function toggle(w: typeof WIDGETS[number]) {
+  // toggleWidget реактивно обновляет store → visibleItems пересчитывается автоматически
   layoutStore.toggleWidget(w.type, { w: w.w, h: w.h })
-  emit('add', w.type)
 }
 
 function doReset() {

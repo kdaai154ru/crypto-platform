@@ -7,8 +7,6 @@ import { useLayoutPersistence } from '~/composables/useLayoutPersistence'
 export const useLayoutStore = defineStore('layout', () => {
   const layouts   = ref<DashboardLayout[]>([])
   const active    = ref<string | null>(null)
-  // editMode перенесён из DashboardGrid сюда, чтобы Toolbar мог его читать
-  // через store вместо хрупкого provide/inject
   const editMode  = ref(false)
   const { load, save } = useLayoutPersistence()
 
@@ -71,6 +69,7 @@ export const useLayoutStore = defineStore('layout', () => {
       save(layouts.value)
     } else {
       const maxY = cur.breakpoints.lg.reduce((m, it) => Math.max(m, it.y + it.h), 0)
+      // x: 0 для полношироких виджетов (w=12), иначе можно добавить логику
       cur.breakpoints.lg.push({
         ...def,
         i: `${type}-${Date.now()}`,
@@ -100,6 +99,11 @@ export const useLayoutStore = defineStore('layout', () => {
     save(layouts.value)
   }
 
+  // 12-column layout (COLS=12 в DashboardGrid)
+  // market-overview занимает всю строку (w=12)
+  // chart(9) + trades-tape(3) = 12
+  // screener-rsi(12) = вся строка
+  // oi-chart(6) + funding-chart(6) = 12
   function defaultLayout(): DashboardLayout {
     return {
       id: crypto.randomUUID(),

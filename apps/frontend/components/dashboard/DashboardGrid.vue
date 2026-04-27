@@ -38,7 +38,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useLayoutStore } from '~/stores/layout.store'
 import type { WidgetLayout } from '@crypto-platform/types'
 
@@ -46,8 +46,8 @@ const layoutStore = useLayoutStore()
 const ready       = ref(false)
 const gridRef     = ref<HTMLElement | null>(null)
 
-// Константы сетки
-const COLS  = 24
+// Константы сетки — 12 колонок (виджеты спроектированы под 12-col)
+const COLS  = 12
 const ROW_H = 80
 const GAP   = 6
 const MIN_W = 2
@@ -162,6 +162,8 @@ function startDrag(e: MouseEvent, id: string) {
     colW,
   }
   ghost.value = { x: item.x, y: item.y, w: item.w, h: item.h }
+  document.body.style.cursor = 'grabbing'
+  document.body.style.userSelect = 'none'
 }
 
 // ─── Resize ───────────────────────────────────────────────────────────────────
@@ -180,6 +182,8 @@ function startResize(e: MouseEvent, id: string) {
     colW,
   }
   ghost.value = { x: item.x, y: item.y, w: item.w, h: item.h }
+  document.body.style.cursor = 'se-resize'
+  document.body.style.userSelect = 'none'
 }
 
 // ─── Mouse move ───────────────────────────────────────────────────────────────
@@ -222,23 +226,32 @@ function onMouseUp() {
   drag.value   = null
   resize.value = null
   ghost.value  = null
+
+  // Сбрасываем глобальный cursor
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
 }
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup',   onMouseUp)
 
-  // ResizeObserver для точной ширины контейнера
+  layoutStore.init()
+
+  // nextTick: ждём пока Vue отрендерит DOM, чтобы gridRef получил реальную ширину
+  await nextTick()
+
   if (gridRef.value) {
-    containerW.value = gridRef.value.clientWidth || 1200
+    const w = gridRef.value.clientWidth
+    if (w > 0) containerW.value = w
+
     ro = new ResizeObserver(entries => {
-      const w = entries[0]?.contentRect.width
-      if (w) containerW.value = w
+      const cw = entries[0]?.contentRect.width
+      if (cw && cw > 0) containerW.value = cw
     })
     ro.observe(gridRef.value)
   }
 
-  layoutStore.init()
   ready.value = true
 })
 
@@ -246,6 +259,9 @@ onUnmounted(() => {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup',   onMouseUp)
   ro?.disconnect()
+  // Гарантируем сброс cursor при размонтировании во время drag
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
 })
 </script>
 
