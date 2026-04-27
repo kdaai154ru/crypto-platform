@@ -24,6 +24,13 @@ export const useSystemStore = defineStore('system', () => {
     return payload.value?.modules.find(m => m.id === id)?.status ?? 'offline'
   }
 
+  /** Returns uptimeMs for a module, or null if not yet received */
+  function moduleUptime(id: string): number | null {
+    const mod = payload.value?.modules.find(m => m.id === id)
+    if (!mod) return null
+    return mod.uptimeMs ?? null
+  }
+
   function widgetHasError(widgetType: string): string | null {
     for (const [modId, widgets] of Object.entries(MODULE_WIDGET_MAP)) {
       if (!widgets.includes(widgetType)) continue
@@ -38,5 +45,5 @@ export const useSystemStore = defineStore('system', () => {
     payload.value?.modules.every(m => m.status === 'online' || m.status === 'degraded') ?? false
   )
 
-  return { payload, update, moduleStatus, widgetHasError, systemOnline }
+  return { payload, update, moduleStatus, moduleUptime, widgetHasError, systemOnline }
 })
