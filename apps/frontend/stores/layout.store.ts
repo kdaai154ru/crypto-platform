@@ -28,8 +28,7 @@ export const useLayoutStore = defineStore('layout', () => {
     save(layouts.value)
   }
 
-  // Явный setter — не мутируем ref напрямую из шаблона/компонентов,
-  // это предотвращает лишние Vue warn при batch-обновлениях Pinia.
+  // Явный setter — не мутируем ref напрямую из шаблонов/компонентов.
   function setEditMode(val: boolean) {
     editMode.value = val
   }
@@ -42,27 +41,15 @@ export const useLayoutStore = defineStore('layout', () => {
     return currentLayout()?.breakpoints.lg ?? []
   }
 
+  // Единственная точка записи в breakpoints.lg.
+  // Заменяем весь массив новым → Vue 3 гарантированно видит изменение.
   function updateWidgets(lg: WidgetLayout[]) {
     const cur = currentLayout()
     if (!cur) return
-    cur.breakpoints.lg = lg
+    // Иммутабельная замена массива — триггерит реактивность без $patch
+    cur.breakpoints.lg = [...lg]
     cur.updatedAt      = Date.now()
     save(layouts.value)
-  }
-
-  function addWidget(w: WidgetLayout) {
-    const cur = currentLayout()
-    if (!cur) return
-    const existing = cur.breakpoints.lg.find(it => it.type === w.type)
-    if (existing) {
-      existing.visible  = true
-      cur.updatedAt     = Date.now()
-      save(layouts.value)
-      return
-    }
-    const maxY = cur.breakpoints.lg.reduce((m, it) => Math.max(m, it.y + it.h), 0)
-    cur.breakpoints.lg.push({ ...w, y: maxY })
-    updateWidgets(cur.breakpoints.lg)
   }
 
   function toggleWidget(
@@ -70,12 +57,17 @@ export const useLayoutStore = defineStore('layout', () => {
     def: Omit<WidgetLayout, 'i' | 'x' | 'y' | 'visible'>,
   ) {
     const cur = currentLayout()
-    if (!cur) return                       // guard: store ещё не инициализирован
+    if (!cur) return
+
     const existing = cur.breakpoints.lg.find(it => it.type === type)
     if (existing) {
-      existing.visible = !existing.visible
-      cur.updatedAt    = Date.now()
-      save(layouts.value)
+      // Иммутабельное обновление: создаём новый массив с новым объектом виджета.
+      // Прямая мутация existing.visible НЕ гарантирует триггер реактивности
+      // при доступе через .find() в Vue 3 Pinia setup-store.
+      const updated = cur.breakpoints.lg.map(it =>
+        it.i === existing.i ? { ...it, visible: !it.visible } : it,
+      )
+      updateWidgets(updated)
     } else {
       const maxY = cur.breakpoints.lg.reduce((m, it) => Math.max(m, it.y + it.h), 0)
       const newWidget: WidgetLayout = {
@@ -86,9 +78,7 @@ export const useLayoutStore = defineStore('layout', () => {
         y:       maxY,
         visible: true,
       }
-      // Пушим в копию чтобы не мутировать reactive array напрямую несколько раз
-      const updated = [...cur.breakpoints.lg, newWidget]
-      updateWidgets(updated)
+      updateWidgets([...cur.breakpoints.lg, newWidget])
     }
   }
 
@@ -102,11 +92,13 @@ export const useLayoutStore = defineStore('layout', () => {
   function updateWidgetSettings(widgetId: string, patch: Record<string, unknown>) {
     const cur = currentLayout()
     if (!cur) return
-    const widget = cur.breakpoints.lg.find(w => w.i === widgetId)
-    if (!widget) return
-    widget.settings = { ...(widget.settings ?? {}), ...patch }
-    cur.updatedAt   = Date.now()
-    save(layouts.value)
+    // Иммутабельное обновление settings
+    const updated = cur.breakpoints.lg.map(w =>
+      w.i === widgetId
+        ? { ...w, settings: { ...(w.settings ?? {}), ...patch } }
+        : w,
+    )
+    updateWidgets(updated)
   }
 
   // 12-column layout (COLS=12 в DashboardGrid)
@@ -134,6 +126,6 @@ export const useLayoutStore = defineStore('layout', () => {
   return {
     layouts, active, editMode,
     init, reset, setEditMode, currentLayout, currentWidgets,
-    updateWidgets, addWidget, toggleWidget, isWidgetVisible, updateWidgetSettings,
+    updateWidgets, toggleWidget, isWidgetVisible, updateWidgetSettings,
   }
 })
