@@ -1,7 +1,5 @@
 // apps/frontend/ecosystem.config.cjs
-// Windows-совместимый запуск nuxt dev через PM2.
-// На Windows .bin/nuxt — bash-шебанг, Node не может его исполнить напрямую.
-// Решение: указываем реальный JS-файл nuxt через node_modules/nuxt/bin/nuxt.mjs
+// Windows PM2: единственный надёжный способ — запускать через cmd /c npm run dev
 "use strict";
 const path = require("path");
 
@@ -11,10 +9,10 @@ module.exports = {
   apps: [
     {
       name: "frontend",
-      script: "node_modules/nuxt/bin/nuxt.mjs",
-      args: "dev --port 3001",
+      script: "npm",
+      args: "run dev",
       cwd: FRONTEND_ROOT,
-      interpreter: "node",
+      interpreter: "none",   // не node, PM2 ищет npm.cmd сам через PATH
       autorestart: true,
       watch: false,
       max_memory_restart: "1G",
