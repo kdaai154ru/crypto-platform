@@ -34,27 +34,29 @@
       </div>
     </div>
 
-    <!-- body -->
-    <!-- widgetProps передаётся только тем виджетам, у которых есть settings -->
-    <!-- чтобы не генерировать Vue warn о неизвестных props -->
+    <!-- body: overflow:hidden убран отсюда — перенесён на inner-wrap -->
+    <!-- resize handle должен выходить за пределы widget-body, поэтому -->
+    <!-- .widget-body теперь overflow:visible, а inner-wrap скрывает контент -->
     <div class="widget-body">
-      <component
-        :is="widgetComponent"
-        v-if="hasSettings"
-        v-bind="widgetProps"
-      />
-      <component :is="widgetComponent" v-else />
-    </div>
+      <div class="widget-body-inner">
+        <component
+          :is="widgetComponent"
+          v-if="hasSettings"
+          v-bind="widgetProps"
+        />
+        <component :is="widgetComponent" v-else />
+      </div>
 
-    <!-- resize handle — только в Edit-режиме -->
-    <div
-      v-if="editMode"
-      class="widget-resize-handle"
-      @mousedown.stop="$emit('resize-start', $event)"
-    >
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <path d="M9 3L3 9M11 6L6 11M11 9L9 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-      </svg>
+      <!-- resize handle — position:absolute от .widget-body (overflow:visible) -->
+      <div
+        v-if="editMode"
+        class="widget-resize-handle"
+        @mousedown.stop="$emit('resize-start', $event)"
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <path d="M9 3L3 9M11 6L6 11M11 9L9 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </div>
     </div>
   </div>
 </template>
@@ -85,7 +87,6 @@ function lazy(imp: () => Promise<unknown>) {
   })
 }
 
-// Виджеты, которые принимают settings-props (symbol, tf)
 const SETTINGS_WIDGETS = new Set([
   'chart', 'trades-tape', 'oi-chart', 'funding-chart',
 ])
@@ -138,7 +139,6 @@ const statusDotStatus = computed(() => {
   return 'offline'
 })
 
-// Передаём settings только виджетам, которые их ожидают
 const widgetProps = computed(() => props.item.settings ?? {})
 </script>
 
@@ -150,7 +150,8 @@ const widgetProps = computed(() => props.item.settings ?? {})
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  overflow: hidden;
+  /* overflow:hidden убран — resize handle должен быть виден поверх края */
+  overflow: visible;
   position: relative;
 }
 .widget-container.is-edit {
@@ -168,6 +169,7 @@ const widgetProps = computed(() => props.item.settings ?? {})
   cursor: grab;
   user-select: none;
   border-bottom: 1px solid var(--color-primary);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   flex-shrink: 0;
 }
 .widget-drag-handle:active { cursor: grabbing; }
@@ -181,6 +183,7 @@ const widgetProps = computed(() => props.item.settings ?? {})
   background: color-mix(in oklch, var(--color-warning) 15%, var(--color-surface));
   border-bottom: 1px solid var(--color-warning);
   z-index: 10;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
 }
 .error-title { font-size: var(--text-xs); font-weight: 500; color: var(--color-warning); }
 .error-sub   { font-size: var(--text-xs); color: var(--color-text-muted); }
@@ -204,12 +207,26 @@ const widgetProps = computed(() => props.item.settings ?? {})
 .status-dot.online   { background: var(--color-success); }
 .status-dot.degraded { background: var(--color-warning); }
 .status-dot.offline  { background: var(--color-error); }
+
+/* widget-body: flex-grow, overflow:visible чтобы handle не обрезался */
 .widget-body {
   flex: 1;
-  overflow: hidden;
+  overflow: visible;
   position: relative;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
+
+/* inner-wrap: именно здесь скрываем содержимое виджета */
+.widget-body-inner {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  position: relative;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+
 .widget-empty {
   display: flex;
   align-items: center;
@@ -218,24 +235,31 @@ const widgetProps = computed(() => props.item.settings ?? {})
   color: var(--color-text-muted);
   font-size: var(--text-sm);
 }
+
+/* resize handle: position:absolute от .widget-body (overflow:visible) */
+/* z-index:200 чтобы быть поверх соседних grid-cell'ов */
 .widget-resize-handle {
   position: absolute;
-  bottom: 4px;
-  right: 4px;
-  width: 20px;
-  height: 20px;
+  bottom: -2px;
+  right: -2px;
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--color-primary);
   cursor: se-resize;
+  border-radius: 0 0 var(--radius-md) 0;
+  background: var(--color-primary);
+  z-index: 200;
   opacity: 0;
   transition: opacity 150ms;
-  border-radius: var(--radius-sm);
-  background: var(--color-primary-highlight);
 }
 .widget-container:hover .widget-resize-handle,
 .widget-container.is-edit .widget-resize-handle {
   opacity: 1;
+}
+.widget-resize-handle svg path {
+  stroke: white;
 }
 </style>

@@ -1,11 +1,11 @@
 <!-- apps/frontend/components/dashboard/WidgetPicker.vue -->
 <template>
   <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" @click.self="$emit('close')">
+    <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
       <div class="modal-box">
         <div class="modal-header">
           <span class="modal-title">Add Widget</span>
-          <button class="modal-close" @click="$emit('close')">×</button>
+          <button class="modal-close" @click="emit('close')">×</button>
         </div>
         <div class="widget-picker-grid">
           <button
@@ -27,7 +27,7 @@
             <button class="btn-confirm-no" @click="confirmReset = false">Нет</button>
           </div>
           <button v-else class="btn-picker-reset" @click="confirmReset = true">↺ Reset layout</button>
-          <button class="btn-picker-done" @click="$emit('close')">Done</button>
+          <button class="btn-picker-done" @click="emit('close')">Done</button>
         </div>
       </div>
     </div>
@@ -39,15 +39,17 @@ import { ref } from 'vue'
 import { useLayoutStore } from '~/stores/layout.store'
 
 // Teleport рендерит фрагмент как корневой узел — Vue не может автоматически
-// наследовать listeners. inheritAttrs: false + явный defineEmits убирает warn.
-defineOptions({ inheritAttrs: false })
+// наследовать listeners. inheritAttrs: false + emits в defineOptions убирает warn.
+// ВАЖНО: defineEmits<{ close: [] }>() в TypeScript-generic форме не регистрирует
+// событие в runtime-списке emits → Vue всё равно видит onClose как
+// «посторонний» listener. Решение: явно объявить emits через defineOptions.
+defineOptions({
+  inheritAttrs: false,
+  emits: ['close'],
+})
 
 defineProps<{ open: boolean }>()
-
-// Только 'close' — @add не используется, toggleWidget обновляет store реактивно.
-const emit = defineEmits<{
-  close: []
-}>()
+const emit = defineEmits<{ close: [] }>()
 
 const layoutStore  = useLayoutStore()
 const confirmReset = ref(false)

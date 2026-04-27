@@ -4,8 +4,9 @@
     <DashboardToolbar />
     <DashboardStatusBar />
     <div class="dashboard-main">
-      <div v-if="ready" class="dash-grid-wrapper" ref="gridRef">
-        <div class="native-grid" :style="gridStyle">
+      <!-- outer wrapper всегда в DOM — gridRef получает ширину сразу -->
+      <div class="dash-grid-wrapper" ref="gridRef">
+        <div v-if="ready" class="native-grid" :style="gridStyle">
 
           <!-- Ghost placeholder при drag/resize -->
           <div
@@ -23,7 +24,7 @@
               'is-dragging': drag?.id === item.i,
               'is-resizing': resize?.id === item.i,
             }"
-            :style="cellStyle(item.x, item.y, item.w, item.h)"
+            :style="activeCellStyle(item)"
           >
             <DashboardWidgetContainer
               :item="item"
@@ -46,6 +47,7 @@ import type { WidgetLayout } from '@crypto-platform/types'
 
 const layoutStore = useLayoutStore()
 const ready       = ref(false)
+// gridRef — на внешнем div, который ВСЕГДА в DOM (v-if убран с него)
 const gridRef     = ref<HTMLElement | null>(null)
 
 // Сетка: 12 колонок, высота строки 80px, зазор 6px
@@ -56,7 +58,7 @@ const MIN_W = 2
 const MIN_H = 2
 
 // Реальная ширина контейнера — обновляется через ResizeObserver
-const containerW = ref(0)   // 0 = не измерено, cellStyle это учитывает
+const containerW = ref(0)
 let ro: ResizeObserver | null = null
 
 // ─── Типы состояния drag/resize ───────────────────────────────────────────────
@@ -86,7 +88,10 @@ const visibleItems = computed<WidgetLayout[]>(() =>
 )
 
 const gridStyle = computed(() => {
-  const rows = visibleItems.value.reduce((m, w) => Math.max(m, w.y + w.h), 0)
+  // Учитываем ghost при расчёте высоты — чтобы сетка растягивалась во время drag
+  const fromStore = visibleItems.value.reduce((m, w) => Math.max(m, w.y + w.h), 0)
+  const fromGhost = ghost.value ? ghost.value.y + ghost.value.h : 0
+  const rows = Math.max(fromStore, fromGhost)
   return {
     position: 'relative' as const,
     width:    '100%',
@@ -96,7 +101,6 @@ const gridStyle = computed(() => {
 
 // ─── Вычисление ширины колонки ────────────────────────────────────────────────
 function getColW(): number {
-  // Используем реальную ширину контейнера; если ещё не измерили — берём clientWidth
   const w = containerW.value > 0
     ? containerW.value
     : (gridRef.value?.clientWidth ?? 1200)
@@ -112,11 +116,21 @@ function cellStyle(x: number, y: number, w: number, h: number) {
     top:       `${GAP + y * (ROW_H + GAP)}px`,
     width:     `${w * colW + (w - 1) * GAP}px`,
     height:    `${h * ROW_H + (h - 1) * GAP}px`,
-    // Анимация позиции/размера только когда не идёт drag/resize
     transition: (drag.value || resize.value)
       ? 'none'
       : 'left 180ms ease, top 180ms ease, width 180ms ease, height 180ms ease',
   }
+}
+
+// ─── Стиль ячейки: во время drag/resize показываем позицию ghost ──────────────
+// Это ключевое исправление: без него виджет стоит на месте пока тащишь
+function activeCellStyle(item: WidgetLayout) {
+  const isDragging = drag.value?.id  === item.i
+  const isResizing = resize.value?.id === item.i
+  if ((isDragging || isResizing) && ghost.value) {
+    return cellStyle(ghost.value.x, ghost.value.y, ghost.value.w, ghost.value.h)
+  }
+  return cellStyle(item.x, item.y, item.w, item.h)
 }
 
 // ─── Snap px → grid-unit ──────────────────────────────────────────────────────
@@ -248,7 +262,7 @@ onMounted(async () => {
 
   layoutStore.init()
 
-  // nextTick: ждём рендера DOM, чтобы gridRef получил реальную ширину
+  // gridRef теперь на внешнем div (всегда в DOM) — можно измерить сразу
   await nextTick()
 
   if (gridRef.value) {
@@ -276,10 +290,10 @@ onUnmounted(() => {
 
 <style>
 .grid-ghost {
-  background:   var(--color-primary);
-  opacity:      0.12;
+  background:    var(--color-primary);
+  opacity:       0.12;
   border-radius: var(--radius-md);
-  border:       2px dashed var(--color-primary);
+  border:        2px dashed var(--color-primary);
   pointer-events: none;
   z-index: 0;
 }
@@ -290,7 +304,8 @@ onUnmounted(() => {
 .grid-cell.is-dragging,
 .grid-cell.is-resizing {
   z-index:  100;
-  opacity: 0.85;
+  opacity:  0.85;
+  /* виджет двигается без transition пока тащим (transition=none стоит в activeCellStyle) */
 }
 </style>
 
@@ -309,5 +324,7 @@ onUnmounted(() => {
 .dash-grid-wrapper {
   padding:     0;
   user-select: none;
+  /* min-height нужен чтобы ResizeObserver сразу получил ненулевую ширину */
+  min-height:  4px;
 }
 </style>
