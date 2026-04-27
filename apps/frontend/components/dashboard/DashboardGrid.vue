@@ -8,9 +8,6 @@
         <div
           class="native-grid"
           :style="gridStyle"
-          @mousemove="onMouseMove"
-          @mouseup="onMouseUp"
-          @mouseleave="onMouseUp"
         >
           <!-- Ghost placeholder при drag/resize -->
           <div
@@ -44,7 +41,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, provide, onMounted, onUnmounted } from 'vue'
+import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
 import { useLayoutStore } from '~/stores/layout.store'
 import type { WidgetLayout } from '@crypto-platform/types'
 
@@ -60,7 +57,7 @@ const GAP   = 6    // px
 const MIN_W = 2
 const MIN_H = 2
 
-// ─── Состояние drag ────────────────────────────────────────────────────────
+// ─── Состояние drag ──────────────────────────────────────────────────────────────────────
 interface DragState {
   id: string
   startMouseX: number; startMouseY: number
@@ -81,7 +78,7 @@ const drag   = ref<DragState | null>(null)
 const resize = ref<ResizeState | null>(null)
 const ghost  = ref<GhostRect | null>(null)
 
-// ─── Данные сетки ──────────────────────────────────────────────────────────
+// ─── Данные сетки ──────────────────────────────────────────────────────────────────────────
 const visibleItems = computed<WidgetLayout[]>(() =>
   (layoutStore.currentLayout()?.breakpoints.lg ?? []).filter(w => w.visible !== false)
 )
@@ -96,9 +93,8 @@ const gridStyle = computed(() => {
   }
 })
 
-// ─── CSS: ячейка → абсолютное позиционирование ─────────────────────────────
+// ─── CSS: ячейка → абсолютное позиционирование ─────────────────────────────────────────────────
 function cellStyle(x: number, y: number, w: number, h: number) {
-  // colW вычисляется динамически по ширине контейнера
   const containerW = gridRef.value?.clientWidth ?? 1200
   const colW = (containerW - GAP * (COLS + 1)) / COLS
   return {
@@ -116,7 +112,7 @@ function getColW(): number {
   return (containerW - GAP * (COLS + 1)) / COLS
 }
 
-// ─── Snap px → grid-unit ───────────────────────────────────────────────────
+// ─── Snap px → grid-unit ───────────────────────────────────────────────────────────────────────────────────────
 function snapX(px: number, colW: number): number {
   return Math.max(0, Math.min(COLS - 1, Math.round(px / (colW + GAP))))
 }
@@ -130,14 +126,13 @@ function snapH(px: number): number {
   return Math.max(MIN_H, Math.round((px + GAP) / (ROW_H + GAP)))
 }
 
-// ─── Коллизии: сдвигаем виджеты вниз ──────────────────────────────────────
+// ─── Коллизии: сдвигаем виджеты вниз ───────────────────────────────────────────────────────────────────────
 function resolveCollisions(items: WidgetLayout[], moved: WidgetLayout): WidgetLayout[] {
   const sorted = [...items].sort((a, b) => a.y - b.y || a.x - b.x)
   const result: WidgetLayout[] = []
   for (const item of sorted) {
     if (item.i === moved.i) { result.push(moved); continue }
     let placed = { ...item }
-    // проверяем перекрытие с уже размещёнными
     let loop = 0
     while (loop++ < 50) {
       const overlap = result.find(r => overlaps(r, placed) && r.i !== placed.i)
@@ -153,7 +148,7 @@ function overlaps(a: WidgetLayout, b: WidgetLayout): boolean {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
 }
 
-// ─── Drag: start ───────────────────────────────────────────────────────────
+// ─── Drag: start ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 function startDrag(e: MouseEvent, id: string) {
   if (!editMode.value) return
   const item = visibleItems.value.find(w => w.i === id)
@@ -170,7 +165,7 @@ function startDrag(e: MouseEvent, id: string) {
   ghost.value = { x: item.x, y: item.y, w: item.w, h: item.h }
 }
 
-// ─── Resize: start ─────────────────────────────────────────────────────────
+// ─── Resize: start ─────────────────────────────────────────────────────────────────────────────────────────────
 function startResize(e: MouseEvent, id: string) {
   if (!editMode.value) return
   const item = visibleItems.value.find(w => w.i === id)
@@ -188,7 +183,7 @@ function startResize(e: MouseEvent, id: string) {
   ghost.value = { x: item.x, y: item.y, w: item.w, h: item.h }
 }
 
-// ─── Mouse move ────────────────────────────────────────────────────────────
+// ─── Mouse move (window-level) ─────────────────────────────────────────────────────────────────────────────
 function onMouseMove(e: MouseEvent) {
   if (drag.value) {
     const d = drag.value
@@ -208,9 +203,9 @@ function onMouseMove(e: MouseEvent) {
   }
 }
 
-// ─── Mouse up: фиксируем позицию ───────────────────────────────────────────
+// ─── Mouse up: фиксируем позицию ──────────────────────────────────────────────────────────────────────────
 function onMouseUp() {
-  if (!ghost.value) return
+  if (!ghost.value && !drag.value && !resize.value) return
 
   const cur = layoutStore.currentLayout()
   if (!cur) { drag.value = null; resize.value = null; ghost.value = null; return }
@@ -218,7 +213,7 @@ function onMouseUp() {
   const g = ghost.value
   const id = drag.value?.id ?? resize.value?.id
 
-  if (id) {
+  if (id && g) {
     const updated = cur.breakpoints.lg.map(w =>
       w.i === id ? { ...w, x: g.x, y: g.y, w: g.w, h: g.h } : w
     )
@@ -232,19 +227,15 @@ function onMouseUp() {
   ghost.value  = null
 }
 
-// ─── Глобальные события мыши (за пределами grid) ──────────────────────────
-function onWindowMouseMove(e: MouseEvent) { onMouseMove(e) }
-function onWindowMouseUp()               { onMouseUp() }
-
 onMounted(() => {
-  window.addEventListener('mousemove', onWindowMouseMove)
-  window.addEventListener('mouseup',   onWindowMouseUp)
+  window.addEventListener('mousemove', onMouseMove)
+  window.addEventListener('mouseup',   onMouseUp)
   layoutStore.init()
   ready.value = true
 })
 onUnmounted(() => {
-  window.removeEventListener('mousemove', onWindowMouseMove)
-  window.removeEventListener('mouseup',   onWindowMouseUp)
+  window.removeEventListener('mousemove', onMouseMove)
+  window.removeEventListener('mouseup',   onMouseUp)
 })
 
 provide('editMode', editMode)
