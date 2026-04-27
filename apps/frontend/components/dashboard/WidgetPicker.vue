@@ -33,8 +33,18 @@
 <script setup lang="ts">
 import { useLayoutStore } from '~/stores/layout.store'
 
+// inheritAttrs: false — компонент рендерит <Teleport> как корень (fragment),
+// Vue не может автоматически унаследовать listeners → отключаем наследование,
+// чтобы убрать предупреждение "Extraneous non-emits event listeners"
+defineOptions({ inheritAttrs: false })
+
 defineProps<{ open: boolean }>()
-const emit = defineEmits<{ close: [] }>()
+
+// Объявляем все события явно — это устраняет Vue warn об «add»
+const emit = defineEmits<{
+  close: []
+  add: [type: string]
+}>()
 
 const layoutStore = useLayoutStore()
 
@@ -59,7 +69,7 @@ function isActive(type: string) {
 
 function toggle(w: typeof WIDGETS[number]) {
   layoutStore.toggleWidget(w.type, { w: w.w, h: w.h })
-  // Не закрываем — пользователь может переключить несколько виджетов подряд
+  emit('add', w.type)
 }
 
 function onReset() {
