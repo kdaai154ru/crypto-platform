@@ -8,10 +8,11 @@ param(
   [string]$Env = "development"
 )
 
-# Git stderr in PowerShell causes NativeCommandError with Stop preference
-# Use Continue so git info messages don't abort the script
+# Git writes info/progress to stderr -- with Stop that triggers NativeCommandError
 $ErrorActionPreference = "Continue"
-$ROOT = Split-Path -Parent $PSScriptRoot
+
+# Script is in repo root, so ROOT = script directory itself
+$ROOT = $PSScriptRoot
 Set-Location $ROOT
 
 function Write-Step { param($n, $text) Write-Host "`n[$n] $text" -ForegroundColor Cyan }
@@ -19,9 +20,8 @@ function Write-OK   { param($text)     Write-Host "  OK: $text" -ForegroundColor
 function Write-Fail { param($text)     Write-Host "`n  ERR: $text" -ForegroundColor Red; exit 1 }
 
 function Invoke-Git {
-  # Runs git and discards stderr (git writes progress/info to stderr)
-  param([string[]]$Args)
-  $result = & git @Args 2>$null
+  param([string[]]$GitArgs)
+  $result = & git @GitArgs 2>$null
   return $result
 }
 
@@ -49,6 +49,7 @@ function Wait-Docker {
 
 # -- 0. Check dependencies -----------------------------------
 Write-Step "0" "Checking dependencies..."
+Write-Host "  Working directory: $ROOT" -ForegroundColor Gray
 foreach ($cmd in @("docker","pnpm","node")) {
   if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
     Write-Fail "$cmd not found in PATH"
@@ -62,9 +63,9 @@ if (-not (Get-Command pm2 -ErrorAction SilentlyContinue)) {
 Write-OK "docker, node, pnpm, pm2 found"
 
 # -- 0b. Check .env ------------------------------------------
-if (-not (Test-Path ".env")) {
+if (-not (Test-Path (Join-Path $ROOT ".env"))) {
   Write-Host "  .env not found! Copying from .env.example..." -ForegroundColor Yellow
-  Copy-Item ".env.example" ".env"
+  Copy-Item (Join-Path $ROOT ".env.example") (Join-Path $ROOT ".env")
   Write-Host "  Edit .env (set JWT_SECRET, PG_PASSWORD, etc), then run again." -ForegroundColor Yellow
   exit 1
 }
@@ -117,17 +118,17 @@ Write-OK "Infrastructure ready"
 Write-Step "4" "Running DB migrations..."
 
 Write-Host "  PostgreSQL..."
-Get-Content "infra/migrations/postgres/001_initial.sql" |
+Get-Content (Join-Path $ROOT "infra/migrations/postgres/001_initial.sql") |
   docker compose exec -T postgres psql -U crypto -d crypto
 if ($LASTEXITCODE -ne 0) { Write-Fail "PostgreSQL migration failed" }
 
 Write-Host "  ClickHouse..."
 $chPass = ""
-$chLine = Select-String -Path ".env" -Pattern "^CLICKHOUSE_PASSWORD=(.*)" | Select-Object -First 1
+$chLine = Select-String -Path (Join-Path $ROOT ".env") -Pattern "^CLICKHOUSE_PASSWORD=(.*)" | Select-Object -First 1
 if ($chLine) {
   $chPass = $chLine.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'")
 }
-Get-Content "infra/migrations/clickhouse/001_initial.sql" |
+Get-Content (Join-Path $ROOT "infra/migrations/clickhouse/001_initial.sql") |
   docker compose exec -T clickhouse clickhouse-client `
     --user default `
     --password "$chPass" `
@@ -150,7 +151,7 @@ Write-OK "Build complete"
 
 # -- 7. PM2 start --------------------------------------------
 Write-Step "7" "Starting all services via PM2..."
-& pm2 start infra/pm2/ecosystem.config.cjs
+& pm2 start (Join-Path $ROOT "infra/pm2/ecosystem.config.cjs")
 if ($LASTEXITCODE -ne 0) { Write-Fail "PM2 start failed" }
 & pm2 save
 Start-Sleep 5
