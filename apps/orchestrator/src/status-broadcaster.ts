@@ -20,8 +20,10 @@ export class StatusBroadcaster {
     const publicModules: PublicModuleState[] = modules.map(m => ({
       id:        m.id,
       status:    m.status,
-      uptimeMs:  m.uptimeMs,   // FIX: was missing — frontend needs this for Uptime column
-      startedAt: m.startedAt,  // FIX: was missing — frontend can compute live uptime from this
+      uptimeMs:  m.uptimeMs,
+      startedAt: m.startedAt,
+      restarts:  m.restarts,
+      error:     m.error,
     }));
 
     const payload = {
@@ -36,16 +38,10 @@ export class StatusBroadcaster {
     try {
       await Promise.all([
         this.valkey.set('system:status:modules', JSON.stringify(publicModules), 'EX', 60),
-        // Кэшируем последний payload для initial-state push в ws-gateway
-        this.valkey.set('system:status:latest', json, 'EX', 120),
+        this.valkey.set('system:status:latest',  json, 'EX', 120),
         this.valkey.xadd(
-          'system:status',
-          'MAXLEN',
-          '~',
-          String(STREAM_MAXLEN),
-          '*',
-          'data',
-          json
+          'system:status', 'MAXLEN', '~', String(STREAM_MAXLEN),
+          '*', 'data', json
         ),
       ]);
     } catch (err) {

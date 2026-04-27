@@ -9,17 +9,19 @@ export interface ModuleState {
   lastHeartbeat: number;
   restarts: number;
   uptimeMs: number;
-  /** Unix ms timestamp when the module last transitioned to 'online' */
+  /** Unix ms когда модуль последний раз перешёл в 'online' */
   startedAt: number;
   error?: string;
 }
 
-/** Safe public projection of ModuleState — no internal fields exposed */
+/** Public projection — всё необходимое для фронта */
 export interface PublicModuleState {
   id: string;
   status: ModuleStatus;
   uptimeMs: number;
   startedAt: number;
+  restarts: number;
+  error?: string;
 }
 
 export interface SystemStatusPayload {

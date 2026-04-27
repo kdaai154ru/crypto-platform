@@ -1,20 +1,12 @@
 // packages/types/src/module.ts
-export type ModuleStatus   = 'online'|'degraded'|'offline'|'restarting'
-export type ExchangeStatus = 'connected'|'reconnecting'|'down'|'degraded'
-export interface ModuleState {
-  id:string; status:ModuleStatus
-  lastHeartbeat:number; restarts:number
-  error?:string; uptimeMs:number
-}
-export interface ExchangeState {
-  id:string; status:ExchangeStatus
-  latencyMs:number; lastMessageAt:number
-  streamsActive:number; restarts:number; error?:string
-}
-export interface SystemStatusPayload {
-  ts:number
-  modules:ModuleState[]
-  exchanges:ExchangeState[]
-  activePairs:number
-  activeClients:number
-}
+// DEPRECATED: используй импорт из './system.js' вместо этого файла.
+// Оставлен для обратной совместимости — всё реэкспортируется из system.ts.
+export type {
+  ModuleStatus,
+  ModuleState,
+  PublicModuleState,
+  SystemStatusPayload,
+} from './system.js';
+
+// ExchangeState остаётся в exchange.ts — реэкспорт для старых импортов
+export type { ExchangeState, ExchangeStatus } from './exchange.js';
