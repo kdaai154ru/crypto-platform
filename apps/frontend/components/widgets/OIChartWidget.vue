@@ -27,9 +27,11 @@ function mountSub(sym: string) {
   if (currentCb) { unsubscribe('deriv_oi', currentSymbol, currentCb); currentCb = null }
   currentSymbol = sym
   currentCb = (d: unknown) => {
-    const p = d as { symbol?: string; ts: number; oi: number }
+    // NormalizedOI: { symbol, exchange, ts, oiUsd, oiCoin }
+    const p = d as { symbol?: string; ts: number; oiUsd: number }
     if (p.symbol && p.symbol !== sym) return
-    series?.update({ time: Math.floor(p.ts / 1000) as unknown as import('lightweight-charts').Time, value: p.oi })
+    if (!p.oiUsd) return
+    series?.update({ time: Math.floor(p.ts / 1000) as unknown as import('lightweight-charts').Time, value: p.oiUsd })
   }
   subscribe('deriv_oi', sym, currentCb)
 }
