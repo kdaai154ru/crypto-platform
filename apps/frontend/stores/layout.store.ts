@@ -5,9 +5,9 @@ import type { DashboardLayout, WidgetLayout } from '@crypto-platform/types'
 import { useLayoutPersistence } from '~/composables/useLayoutPersistence'
 
 export const useLayoutStore = defineStore('layout', () => {
-  const layouts   = ref<DashboardLayout[]>([])
-  const active    = ref<string | null>(null)
-  const editMode  = ref(false)
+  const layouts  = ref<DashboardLayout[]>([])
+  const active   = ref<string | null>(null)
+  const editMode = ref(false)
   const { load, save } = useLayoutPersistence()
 
   function init() {
@@ -23,9 +23,15 @@ export const useLayoutStore = defineStore('layout', () => {
   function reset() {
     editMode.value = false
     const def = defaultLayout()
-    layouts.value = [def]
-    active.value  = def.id
+    layouts.value  = [def]
+    active.value   = def.id
     save(layouts.value)
+  }
+
+  // Явный setter — не мутируем ref напрямую из шаблона/компонентов,
+  // это предотвращает лишние Vue warn при batch-обновлениях Pinia.
+  function setEditMode(val: boolean) {
+    editMode.value = val
   }
 
   function currentLayout(): DashboardLayout | undefined {
@@ -40,7 +46,7 @@ export const useLayoutStore = defineStore('layout', () => {
     const cur = currentLayout()
     if (!cur) return
     cur.breakpoints.lg = lg
-    cur.updatedAt = Date.now()
+    cur.updatedAt      = Date.now()
     save(layouts.value)
   }
 
@@ -49,8 +55,8 @@ export const useLayoutStore = defineStore('layout', () => {
     if (!cur) return
     const existing = cur.breakpoints.lg.find(it => it.type === w.type)
     if (existing) {
-      existing.visible = true
-      cur.updatedAt = Date.now()
+      existing.visible  = true
+      cur.updatedAt     = Date.now()
       save(layouts.value)
       return
     }
@@ -59,26 +65,30 @@ export const useLayoutStore = defineStore('layout', () => {
     updateWidgets(cur.breakpoints.lg)
   }
 
-  function toggleWidget(type: string, def: Omit<WidgetLayout, 'i' | 'x' | 'y' | 'visible'>) {
+  function toggleWidget(
+    type: string,
+    def: Omit<WidgetLayout, 'i' | 'x' | 'y' | 'visible'>,
+  ) {
     const cur = currentLayout()
-    if (!cur) return
+    if (!cur) return                       // guard: store ещё не инициализирован
     const existing = cur.breakpoints.lg.find(it => it.type === type)
     if (existing) {
       existing.visible = !existing.visible
-      cur.updatedAt = Date.now()
+      cur.updatedAt    = Date.now()
       save(layouts.value)
     } else {
       const maxY = cur.breakpoints.lg.reduce((m, it) => Math.max(m, it.y + it.h), 0)
-      // x: 0 для полношироких виджетов (w=12), иначе можно добавить логику
-      cur.breakpoints.lg.push({
+      const newWidget: WidgetLayout = {
         ...def,
-        i: `${type}-${Date.now()}`,
+        i:       `${type}-${Date.now()}`,
         type,
-        x: 0,
-        y: maxY,
+        x:       0,
+        y:       maxY,
         visible: true,
-      })
-      updateWidgets(cur.breakpoints.lg)
+      }
+      // Пушим в копию чтобы не мутировать reactive array напрямую несколько раз
+      const updated = [...cur.breakpoints.lg, newWidget]
+      updateWidgets(updated)
     }
   }
 
@@ -95,19 +105,15 @@ export const useLayoutStore = defineStore('layout', () => {
     const widget = cur.breakpoints.lg.find(w => w.i === widgetId)
     if (!widget) return
     widget.settings = { ...(widget.settings ?? {}), ...patch }
-    cur.updatedAt = Date.now()
+    cur.updatedAt   = Date.now()
     save(layouts.value)
   }
 
   // 12-column layout (COLS=12 в DashboardGrid)
-  // market-overview занимает всю строку (w=12)
-  // chart(9) + trades-tape(3) = 12
-  // screener-rsi(12) = вся строка
-  // oi-chart(6) + funding-chart(6) = 12
   function defaultLayout(): DashboardLayout {
     return {
-      id: crypto.randomUUID(),
-      name: 'Default',
+      id:        crypto.randomUUID(),
+      name:      'Default',
       updatedAt: Date.now(),
       breakpoints: {
         lg: [
@@ -119,15 +125,15 @@ export const useLayoutStore = defineStore('layout', () => {
           { i: 'funding-chart-1',   type: 'funding-chart',   x: 6, y: 19, w: 6,  h: 5,  visible: true, settings: { symbol: 'BTC/USDT' } },
         ],
         md: [],
-        sm: []
+        sm: [],
       },
-      globalSettings: { theme: 'dark', currency: 'USD' }
+      globalSettings: { theme: 'dark', currency: 'USD' },
     }
   }
 
   return {
     layouts, active, editMode,
-    init, reset, currentLayout, currentWidgets,
+    init, reset, setEditMode, currentLayout, currentWidgets,
     updateWidgets, addWidget, toggleWidget, isWidgetVisible, updateWidgetSettings,
   }
 })

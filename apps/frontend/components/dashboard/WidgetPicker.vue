@@ -21,11 +21,10 @@
           </button>
         </div>
         <div class="picker-footer">
-          <!-- inline confirmation вместо confirm() — работает в любых окружениях -->
           <div v-if="confirmReset" class="reset-confirm">
             <span>Сбросить layout?</span>
             <button class="btn-confirm-yes" @click="doReset">Да</button>
-            <button class="btn-confirm-no"  @click="confirmReset = false">Нет</button>
+            <button class="btn-confirm-no" @click="confirmReset = false">Нет</button>
           </div>
           <button v-else class="btn-picker-reset" @click="confirmReset = true">↺ Reset layout</button>
           <button class="btn-picker-done" @click="$emit('close')">Done</button>
@@ -39,15 +38,13 @@
 import { ref } from 'vue'
 import { useLayoutStore } from '~/stores/layout.store'
 
-// Компонент рендерит <Teleport> как корень (fragment) →
-// Vue не может унаследовать listeners автоматически.
-// inheritAttrs: false + явный defineEmits убирает Vue warn.
+// Teleport рендерит фрагмент как корневой узел — Vue не может автоматически
+// наследовать listeners. inheritAttrs: false + явный defineEmits убирает warn.
 defineOptions({ inheritAttrs: false })
 
 defineProps<{ open: boolean }>()
 
-// 'add' убран: Toolbar не использует этот emit,
-// toggleWidget обновляет store реактивно — перерисовка происходит автоматически.
+// Только 'close' — @add не используется, toggleWidget обновляет store реактивно.
 const emit = defineEmits<{
   close: []
 }>()
@@ -75,7 +72,6 @@ function isActive(type: string) {
 }
 
 function toggle(w: typeof WIDGETS[number]) {
-  // toggleWidget реактивно обновляет store → visibleItems пересчитывается автоматически
   layoutStore.toggleWidget(w.type, { w: w.w, h: w.h })
 }
 

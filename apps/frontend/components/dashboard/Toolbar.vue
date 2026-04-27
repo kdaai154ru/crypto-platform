@@ -36,17 +36,16 @@
         />
       </div>
 
-      <!-- editMode теперь из layoutStore, нет нужды в provide/inject -->
-      <button class="btn-sm" @click="layoutStore.editMode = !layoutStore.editMode">
+      <button class="btn-sm" @click="toggleEditMode">
         {{ layoutStore.editMode ? '✓ Done' : '⊞ Edit' }}
       </button>
-      <button class="btn-sm btn-primary" @click="pickerOpen = true">
+      <button class="btn-sm btn-primary" @click="openPicker">
         + Widget
       </button>
     </div>
 
-    <!-- WidgetPicker внутри root-div — нет фрагмента, нет Vue warn -->
-    <DashboardWidgetPicker :open="pickerOpen" @close="pickerOpen = false" />
+    <!-- WidgetPicker внутри root-div — НЕ передаём @add, только @close -->
+    <DashboardWidgetPicker :open="pickerOpen" @close="closePicker" />
   </div>
 </template>
 
@@ -83,6 +82,11 @@ function setTheme(t: string) {
   if (typeof document !== 'undefined')
     document.documentElement.setAttribute('data-theme', t)
 }
+
+// Функции вместо inline-выражений — чище и не вызывают лишних Vue warn
+function openPicker()    { pickerOpen.value = true }
+function closePicker()   { pickerOpen.value = false }
+function toggleEditMode() { layoutStore.setEditMode(!layoutStore.editMode) }
 </script>
 
 <style scoped>
