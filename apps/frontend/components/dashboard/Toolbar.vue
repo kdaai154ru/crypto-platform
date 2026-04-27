@@ -43,10 +43,10 @@
         + Widget
       </button>
     </div>
-  </div>
 
-  <!-- @add убран — WidgetPicker работает через layoutStore напрямую -->
-  <DashboardWidgetPicker :open="pickerOpen" @close="pickerOpen = false" />
+    <!-- WidgetPicker внутри root-div → нет фрагмента → нет Vue warn -->
+    <DashboardWidgetPicker :open="pickerOpen" @close="pickerOpen = false" />
+  </div>
 </template>
 
 <script setup lang="ts">
