@@ -18,6 +18,8 @@ export interface ModuleState {
 export interface PublicModuleState {
   id: string;
   status: ModuleStatus;
+  uptimeMs: number;
+  startedAt: number;
 }
 
 export interface SystemStatusPayload {
