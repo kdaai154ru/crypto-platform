@@ -1,62 +1,64 @@
 <!-- apps/frontend/components/widgets/OIChartWidget.vue -->
 <template>
-  <div class="h-full flex flex-col">
-    <div class="px-3 pt-2 pb-1 text-xs text-muted">Open Interest · {{ props.symbol }}</div>
-    <div class="flex-1 overflow-y-auto px-2 space-y-1">
-      <div v-if="!items.length" class="text-center py-8 text-faint text-xs">Waiting for OI data…</div>
-      <div
-        v-for="item in items" :key="item.ts"
-        class="flex justify-between text-xs py-0.5 px-1 rounded"
-        :class="item.delta > 0 ? 'text-green-400' : item.delta < 0 ? 'text-red-400' : 'text-muted'"
-      >
-        <span>{{ fmtTime(item.ts) }}</span>
-        <span>{{ fmtNum(item.oi) }}</span>
-        <span>{{ item.delta > 0 ? '+' : '' }}{{ fmtNum(item.delta) }}</span>
-      </div>
+  <div class="widget-panel">
+    <div class="panel-header">
+      <span class="panel-title">Open Interest</span>
+      <span class="panel-sym">{{ symbolStore.activeSymbol }}</span>
     </div>
+    <div ref="chartEl" class="chart-area"></div>
   </div>
 </template>
+
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { createChart, type IChartApi, type ISeriesApi, AreaSeries } from 'lightweight-charts'
 import { useWsClient } from '~/composables/useWsClient'
+import { useSymbolStore } from '~/stores/symbol.store'
 
-const props = withDefaults(
-  defineProps<{ symbol?: string }>(),
-  { symbol: 'BTC/USDT' }
-)
-
-interface OIItem { ts: number; oi: number; delta: number; symbol?: string }
-const items = ref<OIItem[]>([])
+const symbolStore = useSymbolStore()
 const { subscribe, unsubscribe, connected } = useWsClient()
-
-let cb: ((d: unknown) => void) | null = null
+const chartEl = ref<HTMLElement | null>(null)
+let chart: IChartApi | null = null
+let series: ISeriesApi<'Area'> | null = null
+let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 
 function mountSub(sym: string) {
-  if (cb) unsubscribe('deriv_oi', currentSymbol, cb)
-  items.value = []
+  if (currentCb) unsubscribe('oi_update', currentSymbol, currentCb)
   currentSymbol = sym
-  cb = (d: unknown) => {
-    const item = d as OIItem
-    if (item.symbol && item.symbol !== sym) return
-    items.value.push(item)
-    if (items.value.length > 100) items.value.shift()
+  currentCb = (d: unknown) => {
+    const p = d as { symbol?: string; ts: number; oi: number }
+    if (p.symbol && p.symbol !== sym) return
+    series?.update({ time: Math.floor(p.ts / 1000) as unknown as import('lightweight-charts').Time, value: p.oi })
   }
-  subscribe('deriv_oi', sym, cb)
+  subscribe('oi_update', sym, currentCb)
 }
 
-onMounted(() => { if (connected.value) mountSub(props.symbol) })
-watch(() => props.symbol, (s) => { if (s && connected.value) mountSub(s) })
-watch(connected, (v) => { if (v) mountSub(props.symbol) })
-onUnmounted(() => { if (cb) unsubscribe('deriv_oi', currentSymbol, cb) })
+onMounted(() => {
+  if (!chartEl.value) return
+  chart = createChart(chartEl.value, {
+    layout: { background: { color: 'transparent' }, textColor: '#cdccca' },
+    grid: { vertLines: { color: '#262523' }, horzLines: { color: '#262523' } },
+    autoSize: true,
+  })
+  series = chart.addSeries(AreaSeries, {
+    lineColor: '#4f98a3', topColor: 'rgba(79,152,163,0.3)', bottomColor: 'rgba(79,152,163,0)',
+  })
+  if (connected.value) mountSub(symbolStore.activeSymbol)
+})
 
-function fmtNum(n: number) {
-  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B'
-  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M'
-  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toFixed(0)
-}
-function fmtTime(ts: number) {
-  return new Date(ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-}
+watch(() => symbolStore.activeSymbol, (sym) => { if (sym && connected.value) mountSub(sym) })
+watch(connected, (v) => {
+  if (v) mountSub(symbolStore.activeSymbol)
+  else { if (currentCb) unsubscribe('oi_update', currentSymbol, currentCb); currentCb = null }
+})
+onUnmounted(() => { if (currentCb) unsubscribe('oi_update', currentSymbol, currentCb); chart?.remove() })
 </script>
+
+<style scoped>
+.widget-panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.panel-header { display: flex; align-items: center; justify-content: space-between; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-divider); flex-shrink: 0; }
+.panel-title  { font-size: var(--text-xs); color: var(--color-text-muted); font-weight: 600; }
+.panel-sym    { font-size: var(--text-xs); color: var(--color-primary); font-weight: 700; }
+.chart-area   { flex: 1; }
+</style>

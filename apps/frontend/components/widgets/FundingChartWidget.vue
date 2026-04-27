@@ -1,56 +1,66 @@
 <!-- apps/frontend/components/widgets/FundingChartWidget.vue -->
 <template>
-  <div class="h-full flex flex-col">
-    <div class="px-3 pt-2 pb-1 text-xs text-muted">Funding Rate · {{ props.symbol }}</div>
-    <div class="flex-1 overflow-y-auto px-2 space-y-1">
-      <div v-if="!items.length" class="text-center py-8 text-faint text-xs">Waiting for funding data…</div>
-      <div
-        v-for="item in items" :key="item.ts"
-        class="flex justify-between text-xs py-0.5 px-1 rounded"
-        :class="item.rate > 0 ? 'text-green-400' : item.rate < 0 ? 'text-red-400' : 'text-muted'"
-      >
-        <span>{{ fmtTime(item.ts) }}</span>
-        <span>{{ item.exchange }}</span>
-        <span>{{ (item.rate * 100).toFixed(4) }}%</span>
-      </div>
+  <div class="widget-panel">
+    <div class="panel-header">
+      <span class="panel-title">Funding Rate</span>
+      <span class="panel-sym">{{ symbolStore.activeSymbol }}</span>
     </div>
+    <div ref="chartEl" class="chart-area"></div>
   </div>
 </template>
+
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { createChart, type IChartApi, type ISeriesApi, HistogramSeries } from 'lightweight-charts'
 import { useWsClient } from '~/composables/useWsClient'
+import { useSymbolStore } from '~/stores/symbol.store'
 
-const props = withDefaults(
-  defineProps<{ symbol?: string }>(),
-  { symbol: 'BTC/USDT' }
-)
-
-interface FundItem { ts: number; rate: number; exchange: string; symbol?: string }
-const items = ref<FundItem[]>([])
+const symbolStore = useSymbolStore()
 const { subscribe, unsubscribe, connected } = useWsClient()
-
-let cb: ((d: unknown) => void) | null = null
+const chartEl = ref<HTMLElement | null>(null)
+let chart: IChartApi | null = null
+let series: ISeriesApi<'Histogram'> | null = null
+let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 
 function mountSub(sym: string) {
-  if (cb) unsubscribe('deriv_fund', currentSymbol, cb)
-  items.value = []
+  if (currentCb) unsubscribe('funding_update', currentSymbol, currentCb)
   currentSymbol = sym
-  cb = (d: unknown) => {
-    const item = d as FundItem
-    if (item.symbol && item.symbol !== sym) return
-    items.value.push(item)
-    if (items.value.length > 100) items.value.shift()
+  currentCb = (d: unknown) => {
+    const p = d as { symbol?: string; ts: number; rate: number }
+    if (p.symbol && p.symbol !== sym) return
+    series?.update({
+      time: Math.floor(p.ts / 1000) as unknown as import('lightweight-charts').Time,
+      value: p.rate * 100,
+      color: p.rate >= 0 ? '#22c55e' : '#ef4444',
+    })
   }
-  subscribe('deriv_fund', sym, cb)
+  subscribe('funding_update', sym, currentCb)
 }
 
-onMounted(() => { if (connected.value) mountSub(props.symbol) })
-watch(() => props.symbol, (s) => { if (s && connected.value) mountSub(s) })
-watch(connected, (v) => { if (v) mountSub(props.symbol) })
-onUnmounted(() => { if (cb) unsubscribe('deriv_fund', currentSymbol, cb) })
+onMounted(() => {
+  if (!chartEl.value) return
+  chart = createChart(chartEl.value, {
+    layout: { background: { color: 'transparent' }, textColor: '#cdccca' },
+    grid: { vertLines: { color: '#262523' }, horzLines: { color: '#262523' } },
+    autoSize: true,
+  })
+  series = chart.addSeries(HistogramSeries, { color: '#4f98a3' })
+  if (connected.value) mountSub(symbolStore.activeSymbol)
+})
 
-function fmtTime(ts: number) {
-  return new Date(ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })
-}
+watch(() => symbolStore.activeSymbol, (sym) => { if (sym && connected.value) mountSub(sym) })
+watch(connected, (v) => {
+  if (v) mountSub(symbolStore.activeSymbol)
+  else { if (currentCb) unsubscribe('funding_update', currentSymbol, currentCb); currentCb = null }
+})
+onUnmounted(() => { if (currentCb) unsubscribe('funding_update', currentSymbol, currentCb); chart?.remove() })
 </script>
+
+<style scoped>
+.widget-panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.panel-header { display: flex; align-items: center; justify-content: space-between; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-divider); flex-shrink: 0; }
+.panel-title  { font-size: var(--text-xs); color: var(--color-text-muted); font-weight: 600; }
+.panel-sym    { font-size: var(--text-xs); color: var(--color-primary); font-weight: 700; }
+.chart-area   { flex: 1; }
+</style>

@@ -1,95 +1,101 @@
 <!-- apps/frontend/components/widgets/TradesTapeWidget.vue -->
 <template>
-  <div class="h-full overflow-y-auto font-mono text-xs px-2 py-1 space-y-0.5">
-    <div
-      v-for="t in displayTrades"
-      :key="t.tradeId ?? t.ts"
-      :class="[
-        'flex justify-between items-center py-0.5 px-1 rounded',
-        t.side === 'buy' ? 'text-green-400' : 'text-red-400',
-        t.isLarge ? 'bg-yellow-400/10 font-bold' : ''
-      ]"
-    >
-      <span>{{ t.side.toUpperCase() }}</span>
-      <span>{{ t.price.toFixed(2) }}</span>
-      <span>{{ t.qty.toFixed(4) }}</span>
-      <span class="text-muted">{{ t.sizeLabel }}</span>
+  <div class="trades-tape">
+    <div class="tape-header">
+      <span class="tape-title">Trades</span>
+      <span class="tape-symbol">{{ symbolStore.activeSymbol }}</span>
     </div>
-    <div v-if="!displayTrades.length" class="text-center py-8 text-faint text-xs">
-      Waiting for trades…
+    <div class="tape-list" ref="listEl">
+      <div
+        v-for="t in trades"
+        :key="t.id"
+        :class="['tape-row', t.side === 'buy' ? 'buy' : 'sell']"
+      >
+        <span class="t-price">{{ t.price.toFixed(2) }}</span>
+        <span class="t-qty">{{ t.qty.toFixed(4) }}</span>
+        <span class="t-time">{{ fmtTime(t.ts) }}</span>
+      </div>
     </div>
   </div>
 </template>
+
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import type { NormalizedTrade } from '@crypto-platform/types'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useWsClient } from '~/composables/useWsClient'
+import { useSymbolStore } from '~/stores/symbol.store'
+import type { NormalizedTrade } from '@crypto-platform/types'
 
-const props = withDefaults(
-  defineProps<{ symbol?: string }>(),
-  { symbol: 'BTC/USDT' }
-)
-
-const trades = ref<NormalizedTrade[]>([])
+const symbolStore = useSymbolStore()
 const { subscribe, unsubscribe, connected } = useWsClient()
 
-// Каналы ws-gateway:
-//   CHANNEL_MAP 'trades:stream' → 'trades'
-//   CHANNEL_MAP 'trades:large'  → 'trades_large'
-// Gateway доставляет сообщение { type:'trades', data: NormalizedTrade }
-// Фильтрация по symbol делается в callback (gateway может слать все символы)
-let tradeCb: ((d: unknown) => void) | null = null
-let largeCb: ((d: unknown) => void) | null = null
+const trades = ref<NormalizedTrade[]>([])
+const listEl = ref<HTMLElement | null>(null)
+const MAX    = 100
+
+let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 
-function push(t: NormalizedTrade) {
-  trades.value.push(t)
-  if (trades.value.length > 300) trades.value.splice(0, trades.value.length - 300)
-}
-
 function mountSub(sym: string) {
-  // Отписываемся от старого символа
-  if (tradeCb) unsubscribe('trades', currentSymbol, tradeCb)
-  if (largeCb) unsubscribe('trades_large', currentSymbol, largeCb)
-  trades.value = []
+  if (currentCb) unsubscribe('trades', currentSymbol, currentCb)
   currentSymbol = sym
-
-  tradeCb = (d: unknown) => {
+  trades.value  = []
+  currentCb = (d: unknown) => {
     const t = d as NormalizedTrade & { symbol?: string }
     if (t.symbol && t.symbol !== sym) return
-    push(t)
+    trades.value.unshift(t)
+    if (trades.value.length > MAX) trades.value.length = MAX
+    nextTick(() => {
+      if (listEl.value) listEl.value.scrollTop = 0
+    })
   }
-  largeCb = (d: unknown) => {
-    const t = d as NormalizedTrade & { symbol?: string }
-    if (t.symbol && t.symbol !== sym) return
-    push({ ...t, isLarge: true })
-  }
-
-  subscribe('trades', sym, tradeCb)
-  subscribe('trades_large', sym, largeCb)
+  subscribe('trades', sym, currentCb)
 }
 
-onMounted(() => { if (connected.value) mountSub(props.symbol) })
+onMounted(() => { if (connected.value) mountSub(symbolStore.activeSymbol) })
 
-watch(() => props.symbol, (sym) => {
+watch(() => symbolStore.activeSymbol, (sym) => {
   if (sym && connected.value) mountSub(sym)
 })
 
 watch(connected, (v) => {
-  if (v) mountSub(props.symbol)
-  else {
-    if (tradeCb) unsubscribe('trades', currentSymbol, tradeCb)
-    if (largeCb) unsubscribe('trades_large', currentSymbol, largeCb)
-    tradeCb = null
-    largeCb = null
-  }
+  if (v) mountSub(symbolStore.activeSymbol)
+  else { if (currentCb) unsubscribe('trades', currentSymbol, currentCb); currentCb = null }
 })
 
 onUnmounted(() => {
-  if (tradeCb) unsubscribe('trades', currentSymbol, tradeCb)
-  if (largeCb) unsubscribe('trades_large', currentSymbol, largeCb)
+  if (currentCb) unsubscribe('trades', currentSymbol, currentCb)
 })
 
-// Выводим в обратном порядке (новые сверху)
-const displayTrades = computed(() => trades.value.slice().reverse())
+function fmtTime(ts: number): string {
+  const d = new Date(ts)
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`
+}
 </script>
+
+<style scoped>
+.trades-tape { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+
+.tape-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-divider);
+  flex-shrink: 0;
+}
+.tape-title  { font-size: var(--text-xs); color: var(--color-text-muted); font-weight: 600; }
+.tape-symbol { font-size: var(--text-xs); color: var(--color-primary); font-weight: 700; }
+
+.tape-list { flex: 1; overflow-y: auto; }
+
+.tape-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  padding: 2px var(--space-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  border-bottom: 1px solid oklch(from var(--color-border) l c h / 0.3);
+}
+.tape-row.buy  { color: var(--color-success); }
+.tape-row.sell { color: var(--color-notification); }
+.t-price { font-weight: 600; }
+.t-qty, .t-time { color: var(--color-text-muted); text-align: right; }
+</style>
