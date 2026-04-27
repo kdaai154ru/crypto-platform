@@ -45,21 +45,19 @@
     </div>
   </div>
 
-  <DashboardWidgetPicker :open="pickerOpen" @close="pickerOpen = false" @add="onAddWidget" />
+  <!-- @add убран — WidgetPicker работает через layoutStore напрямую -->
+  <DashboardWidgetPicker :open="pickerOpen" @close="pickerOpen = false" />
 </template>
 
 <script setup lang="ts">
 import { ref, inject } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { Ref } from 'vue'
-import { useLayoutStore } from '~/stores/layout.store'
 import { useSymbolStore } from '~/stores/symbol.store'
 import { useWsClient } from '~/composables/useWsClient'
-import type { WidgetLayout } from '@crypto-platform/types'
 
 const editMode    = inject<Ref<boolean>>('editMode')!
 const pickerOpen  = ref(false)
-const layoutStore = useLayoutStore()
 const symbolStore = useSymbolStore()
 const { activeTf } = storeToRefs(symbolStore)
 const { connected } = useWsClient()
@@ -86,7 +84,6 @@ function setTheme(t: string) {
 }
 
 function toggleEdit() { editMode.value = !editMode.value }
-function onAddWidget(w: WidgetLayout) { layoutStore.addWidget(w) }
 </script>
 
 <style scoped>
