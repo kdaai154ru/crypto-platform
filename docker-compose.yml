@@ -1,0 +1,161 @@
+# ============================================================
+# docker-compose.yml  —  crypto-platform
+# Расположение:  <корень проекта>/docker-compose.yml
+# Переменные подгружаются из .env в этой же папке
+# ============================================================
+
+
+services:
+  valkey:
+    image: valkey/valkey:8.1
+    container_name: crypto-valkey
+    ports:
+      - "6379:6379"
+    command: ["valkey-server", "--appendonly", "yes", "--requirepass", "${VALKEY_PASSWORD}"]
+    volumes:
+      - valkey_data:/data
+    networks:
+      - crypto-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: crypto-postgres
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-crypto}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB:-crypto}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - crypto-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-crypto}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3-alpine
+    container_name: crypto-clickhouse
+    ports:
+      - "18123:8123"
+      - "19000:9000"
+    environment:
+      CLICKHOUSE_DB:       ${CLICKHOUSE_DB:-crypto}
+      CLICKHOUSE_USER:     ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - crypto-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - >
+          wget -qO- --header "X-ClickHouse-User: ${CLICKHOUSE_USER:-default}"
+          --header "X-ClickHouse-Key: ${CLICKHOUSE_PASSWORD}"
+          "http://localhost:8123/?query=SELECT%201"
+          | grep -q 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    container_name: crypto-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/docker/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - crypto-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: crypto-grafana
+    ports:
+      - "3100:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER:     ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED:  "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/docker/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - crypto-net
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: crypto-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - crypto-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+
+networks:
+  crypto-net:
+    driver: bridge
+
+
+volumes:
+  valkey_data:
+  postgres_data:
+  clickhouse_data:
+  prometheus_data:
+  grafana_data:
