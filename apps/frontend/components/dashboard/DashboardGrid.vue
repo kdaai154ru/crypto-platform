@@ -50,32 +50,43 @@ const ready       = ref(false)
 const ROW_H = 80
 const GAP   = 6
 
-// vue-grid-layout работает с плоским массивом { i, x, y, w, h }
-const gridLayout = ref<Array<{ i: string; x: number; y: number; w: number; h: number }>>( [])
+type GridEntry = { i: string; x: number; y: number; w: number; h: number }
+
+const gridLayout = ref<GridEntry[]>([])
+
+// Флаг: предотвращает реакцию watch'а во время обработки onLayoutUpdated
+let _updatingFromGrid = false
 
 function buildGrid() {
+  if (_updatingFromGrid) return
   const widgets = layoutStore.currentLayout()?.breakpoints.lg ?? []
   gridLayout.value = widgets
     .filter(w => w.visible !== false)
     .map(w => ({ i: w.i, x: w.x, y: w.y, w: w.w, h: w.h }))
 }
 
-// При изменении стора (например toggle widget) — перестраиваем grid
-const storeWidgets = computed(() =>
-  (layoutStore.currentLayout()?.breakpoints.lg ?? []).filter(w => w.visible !== false)
+// Следим только за списком видимых виджетов (по id через join),
+// чтобы не реагировать на каждое изменение позиции
+const storeVisibleIds = computed(() =>
+  (layoutStore.currentLayout()?.breakpoints.lg ?? [])
+    .filter(w => w.visible !== false)
+    .map(w => w.i)
+    .join(',')
 )
-watch(storeWidgets, buildGrid, { deep: true })
+watch(storeVisibleIds, buildGrid)
 
 // После drag/resize vue-grid-layout вызывает этот хук — сохраняем позиции в store
-function onLayoutUpdated(newLayout: Array<{ i: string; x: number; y: number; w: number; h: number }>) {
+function onLayoutUpdated(newLayout: GridEntry[]) {
+  _updatingFromGrid = true
   const cur = layoutStore.currentLayout()
-  if (!cur) return
-  cur.breakpoints.lg = cur.breakpoints.lg.map(w => {
-    const g = newLayout.find(n => n.i === w.i)
-    return g ? { ...w, x: g.x, y: g.y, w: g.w, h: g.h } : w
-  })
-  // сохраняем через store
-  layoutStore.updateWidgets(cur.breakpoints.lg)
+  if (cur) {
+    cur.breakpoints.lg = cur.breakpoints.lg.map(w => {
+      const g = newLayout.find(n => n.i === w.i)
+      return g ? { ...w, x: g.x, y: g.y, w: g.w, h: g.h } : w
+    })
+    layoutStore.updateWidgets(cur.breakpoints.lg)
+  }
+  _updatingFromGrid = false
 }
 
 // Конвертируем запись grid обратно в WidgetLayout (c type, visible, settings)
