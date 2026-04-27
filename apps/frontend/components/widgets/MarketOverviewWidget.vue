@@ -12,21 +12,41 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import type { NormalizedTicker } from '@crypto-platform/types'
-import { useWidgetSubscription } from '~/composables/useWidgetSubscription'
+import { useWsClient } from '~/composables/useWsClient'
 
 const DEFAULT_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT']
 const tickers = ref<NormalizedTicker[]>([])
 
-for (const sym of DEFAULT_SYMBOLS) {
-  // computed(() => sym) обеспечивает стабильный Ref<string> для каждого символа
-  const symbolRef = computed(() => sym)
-  useWidgetSubscription(`overview-${sym}`, [`ticker:${sym}`], symbolRef, (_, d) => {
-    const idx = tickers.value.findIndex(t => t.symbol === sym)
-    const t = d as NormalizedTicker
-    if (idx >= 0) tickers.value[idx] = t
-    else tickers.value.push(t)
-  })
+// FIX: правильный канал 'ticker' (не 'ticker:BTC/USDT').
+// ws-gateway шлёт { type:'ticker', data:{ symbol, last, ... } }.
+// Подписываемся один раз на канал 'ticker' per-symbol через subscribe().
+const { subscribe, unsubscribe, onReady } = useWsClient()
+
+const handlers: Array<{ sym: string; cb: (d: unknown) => void }> = []
+
+function mount() {
+  for (const { sym, cb } of handlers) unsubscribe('ticker', sym, cb)
+  handlers.length = 0
+
+  for (const sym of DEFAULT_SYMBOLS) {
+    const cb = (d: unknown) => {
+      const t = d as NormalizedTicker
+      if (t.symbol !== sym) return
+      const idx = tickers.value.findIndex(x => x.symbol === sym)
+      if (idx >= 0) tickers.value[idx] = t
+      else tickers.value.push(t)
+    }
+    subscribe('ticker', sym, cb)
+    handlers.push({ sym, cb })
+  }
 }
+
+onReady(mount)
+
+import { onUnmounted } from 'vue'
+onUnmounted(() => {
+  for (const { sym, cb } of handlers) unsubscribe('ticker', sym, cb)
+})
 </script>

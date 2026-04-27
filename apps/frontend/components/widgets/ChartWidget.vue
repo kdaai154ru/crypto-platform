@@ -22,6 +22,7 @@ let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 
 function mountSub(sym: string) {
+  // FIX: правильный канал 'candle' (ws-gateway: agg:candle -> candle)
   if (currentCb) { unsubscribe('candle', currentSymbol, currentCb); currentCb = null }
   currentSymbol = sym
   series?.setData([])
@@ -48,11 +49,9 @@ onMounted(() => {
     borderVisible: false,
     wickUpColor: '#22c55e', wickDownColor: '#ef4444',
   })
-  // onReady: fires when WS open (now or later), chart DOM is ready by onMounted
   onReady(() => mountSub(activeSymbol.value))
 })
 
-// Symbol change — WS already open at this point
 watch(activeSymbol, (sym) => { if (sym && chart) mountSub(sym) })
 
 onUnmounted(() => {
