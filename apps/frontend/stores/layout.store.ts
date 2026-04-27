@@ -40,6 +40,17 @@ export const useLayoutStore = defineStore('layout', () => {
     updateWidgets(cur.breakpoints.lg)
   }
 
+  /** Обновить settings конкретного виджета по id (например, сменить symbol) */
+  function updateWidgetSettings(widgetId: string, patch: Record<string, unknown>) {
+    const cur = currentLayout()
+    if (!cur) return
+    const widget = cur.breakpoints.lg.find(w => w.i === widgetId)
+    if (!widget) return
+    widget.settings = { ...(widget.settings ?? {}), ...patch }
+    cur.updatedAt = Date.now()
+    save(layouts.value)
+  }
+
   function defaultLayout(): DashboardLayout {
     return {
       id: crypto.randomUUID(),
@@ -61,5 +72,5 @@ export const useLayoutStore = defineStore('layout', () => {
     }
   }
 
-  return { layouts, active, init, currentLayout, updateWidgets, addWidget }
+  return { layouts, active, init, currentLayout, updateWidgets, addWidget, updateWidgetSettings }
 })
