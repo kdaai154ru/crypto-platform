@@ -1,32 +1,31 @@
 // apps/frontend/composables/useWsClient.ts
 import { ref } from 'vue'
 
-// Broadcast channels ws-gateway delivers to ALL clients automatically.
-// No subscribe message needed; skip them in pendingSubs reconnect loop.
+// Must stay in sync with BROADCAST_WS_CHANNELS in apps/ws-gateway/src/valkey-streams.ts.
+// Broadcast channels are delivered to ALL clients automatically by ws-gateway —
+// no subscribe message needed, and pendingSubs must NOT track them.
 const BROADCAST_CHANNELS = new Set([
   'system_status',
   'screener_update',
   'options_update',
   'etf_latest',
+  'alerts_triggered', // FIX: was missing — ws-gateway broadcasts this, no subscribe needed
 ])
 
-// ── Singleton state (module-level, создаётся один раз) ──
+// ── Singleton state (модульный уровень, создаётся один раз) ──
 const connected = ref(false)
 const clientId  = ref<string | null>(null)
 let   ws: WebSocket | null = null
 let   reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 const handlers    = new Map<string, Set<(data: unknown) => void>>()
-const pendingSubs = new Map<string, Set<string>>() // channel → Set of symbols (только symbol-specific)
+const pendingSubs = new Map<string, Set<string>>() // channel → Set of symbols
 
 let initialized = false
-let connecting  = false   // FIX #3: предотвращает race condition между new WebSocket() и onopen
+let connecting  = false
 let cachedWsUrl: string | null = null
 
 function connect() {
-  // FIX #3: двойная защита — проверяем и существующий сокет, и флаг connecting.
-  // Без connecting возможна щель: ws ещё null (readyState недоступен),
-  // но второй вызов connect() уже проходит проверку ws?.readyState < 2.
   if (connecting || (ws && ws.readyState < 2)) return
   connecting = true
 
@@ -54,7 +53,6 @@ function connect() {
   }
 
   ws.onerror = () => {
-    // onerror всегда предшествует onclose — onclose сбросит connecting
     ws?.close()
   }
 
@@ -80,14 +78,9 @@ export function useWsClient() {
     if (!handlers.has(channel)) handlers.set(channel, new Set())
     const set = handlers.get(channel)!
 
-    // Guard: один и тот же callback не добавляем дважды
     if (set.has(cb)) return
     set.add(cb)
 
-    // FIX #5: broadcast-каналы НЕ добавляем в pendingSubs.
-    // Пустая строка '' в Set не приносит вреда сама по себе, но
-    // pendingSubs используется в onopen для переподписки — broadcast
-    // там не нужны. Накопление '' при каждом реконнекте бессмысленно.
     if (!BROADCAST_CHANNELS.has(channel)) {
       if (!pendingSubs.has(channel)) pendingSubs.set(channel, new Set())
       pendingSubs.get(channel)!.add(symbol)
@@ -102,8 +95,6 @@ export function useWsClient() {
     const set = handlers.get(channel)
     if (!set) return
 
-    // FIX #5: всегда удаляем конкретный callback, даже если в Set остались другие.
-    // Раньше callback удалялся только при set.size === 0, «мёртвые» cb копились в памяти.
     set.delete(cb)
 
     if (set.size === 0) {
@@ -115,7 +106,6 @@ export function useWsClient() {
         }
       }
     } else if (!BROADCAST_CHANNELS.has(channel)) {
-      // Остались другие подписчики — удаляем только этот symbol если он больше не нужен
       pendingSubs.get(channel)?.delete(symbol)
     }
   }
