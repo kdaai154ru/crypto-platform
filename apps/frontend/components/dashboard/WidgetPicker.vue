@@ -11,7 +11,7 @@
           <button
             v-for="w in WIDGETS"
             :key="w.type"
-            :class="['widget-picker-card', isActive(w.type) && 'wpc-active']" 
+            :class="['widget-picker-card', isActive(w.type) && 'wpc-active']"
             @click="toggle(w)"
           >
             <span class="wpc-check" v-if="isActive(w.type)">✓</span>
@@ -21,7 +21,13 @@
           </button>
         </div>
         <div class="picker-footer">
-          <button class="btn-picker-reset" @click="onReset">↺ Reset layout</button>
+          <!-- inline confirmation вместо confirm() — работает в любых окружениях -->
+          <div v-if="confirmReset" class="reset-confirm">
+            <span>Сбросить layout?</span>
+            <button class="btn-confirm-yes" @click="doReset">Да</button>
+            <button class="btn-confirm-no"  @click="confirmReset = false">Нет</button>
+          </div>
+          <button v-else class="btn-picker-reset" @click="confirmReset = true">↺ Reset layout</button>
           <button class="btn-picker-done" @click="$emit('close')">Done</button>
         </div>
       </div>
@@ -30,11 +36,12 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useLayoutStore } from '~/stores/layout.store'
 
-// Компонент рендерит <Teleport> как корень (fragment/text) →
+// Компонент рендерит <Teleport> как корень (fragment) →
 // Vue не может унаследовать listeners автоматически.
-// inheritAttrs: false + явное defineEmits убирают Vue warn.
+// inheritAttrs: false убирает Vue warn.
 defineOptions({ inheritAttrs: false })
 
 defineProps<{ open: boolean }>()
@@ -44,7 +51,8 @@ const emit = defineEmits<{
   add:   [type: string]
 }>()
 
-const layoutStore = useLayoutStore()
+const layoutStore   = useLayoutStore()
+const confirmReset  = ref(false)
 
 const WIDGETS = [
   { type: 'chart',           icon: '📈', label: 'Price Chart',       description: 'Candlestick + indicators',     w: 9,  h: 8  },
@@ -70,10 +78,10 @@ function toggle(w: typeof WIDGETS[number]) {
   emit('add', w.type)
 }
 
-function onReset() {
-  if (confirm('Сбросить layout к дефолтному?')) {
-    layoutStore.reset()
-  }
+function doReset() {
+  layoutStore.reset()
+  confirmReset.value = false
+  emit('close')
 }
 </script>
 
@@ -137,6 +145,23 @@ function onReset() {
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--color-divider);
   flex-shrink: 0;
+  min-height: 44px;
+}
+.reset-confirm {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-xs); color: var(--color-text-muted);
+}
+.btn-confirm-yes {
+  padding: 2px 10px; border-radius: var(--radius-sm);
+  font-size: var(--text-xs); font-weight: 600;
+  background: var(--color-warning); color: #fff;
+  border: none; cursor: pointer;
+}
+.btn-confirm-no {
+  padding: 2px 10px; border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  background: var(--color-surface-offset); color: var(--color-text-muted);
+  border: 1px solid var(--color-border); cursor: pointer;
 }
 .btn-picker-reset {
   font-size: var(--text-xs); color: var(--color-text-muted);

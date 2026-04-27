@@ -1,22 +1,25 @@
 <!-- apps/frontend/components/widgets/TradesTapeWidget.vue -->
 <template>
   <div class="trades-tape">
-    <div class="tape-list" ref="listEl">
+    <!-- виртуальный список: рендерим только видимые строки -->
+    <div class="tape-list" ref="listEl" @scroll.passive="onScroll">
+      <div class="tape-spacer-top"    :style="{ height: topSpacerH + 'px' }" />
       <div
-        v-for="t in trades"
-        :key="t.id"
+        v-for="t in visibleTrades"
+        :key="t._key"
         :class="['tape-row', t.side === 'buy' ? 'buy' : 'sell']"
       >
         <span class="t-price">{{ t.price.toFixed(2) }}</span>
         <span class="t-qty">{{ t.qty.toFixed(4) }}</span>
         <span class="t-time">{{ fmtTime(t.ts) }}</span>
       </div>
+      <div class="tape-spacer-bottom" :style="{ height: botSpacerH + 'px' }" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWsClient } from '~/composables/useWsClient'
 import { useSymbolStore } from '~/stores/symbol.store'
@@ -26,12 +29,34 @@ const symbolStore = useSymbolStore()
 const { activeSymbol } = storeToRefs(symbolStore)
 const { subscribe, unsubscribe, onReady } = useWsClient()
 
-const trades = ref<NormalizedTrade[]>([])
-const listEl = ref<HTMLElement | null>(null)
-const MAX    = 100
+// Максимум строк в памяти — ограничиваем рост DOM
+const MAX     = 200
+const ROW_H   = 22   // px, высота одной строки
+const VISIBLE = 30   // сколько рендерим одновременно
+
+interface TradeRow extends NormalizedTrade { _key: string }
+
+const trades  = ref<TradeRow[]>([])
+const listEl  = ref<HTMLElement | null>(null)
+const scrollTop = ref(0)
+let _counter  = 0
 
 let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
+
+// Виртуализация: вычисляем slice из trades
+const startIdx = computed(() => {
+  const idx = Math.floor(scrollTop.value / ROW_H)
+  return Math.max(0, idx - 5)
+})
+const endIdx = computed(() => Math.min(trades.value.length, startIdx.value + VISIBLE + 10))
+const visibleTrades = computed(() => trades.value.slice(startIdx.value, endIdx.value))
+const topSpacerH    = computed(() => startIdx.value * ROW_H)
+const botSpacerH    = computed(() => (trades.value.length - endIdx.value) * ROW_H)
+
+function onScroll() {
+  if (listEl.value) scrollTop.value = listEl.value.scrollTop
+}
 
 function mountSub(sym: string) {
   if (currentCb) { unsubscribe('trades', currentSymbol, currentCb); currentCb = null }
@@ -40,9 +65,12 @@ function mountSub(sym: string) {
   currentCb = (d: unknown) => {
     const t = d as NormalizedTrade & { symbol?: string }
     if (t.symbol && t.symbol !== sym) return
-    trades.value.unshift(t)
+    const row: TradeRow = {
+      ...t,
+      _key: (t as unknown as { tradeId?: string }).tradeId ?? `${t.ts}-${++_counter}`,
+    }
+    trades.value.unshift(row)
     if (trades.value.length > MAX) trades.value.length = MAX
-    nextTick(() => { if (listEl.value) listEl.value.scrollTop = 0 })
   }
   subscribe('trades', sym, currentCb)
 }
@@ -59,14 +87,16 @@ function fmtTime(ts: number): string {
 
 <style scoped>
 .trades-tape { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-.tape-list { flex: 1; overflow-y: auto; }
+.tape-list   { flex: 1; overflow-y: auto; }
 .tape-row {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   padding: 2px var(--space-3);
+  height: 22px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   border-bottom: 1px solid oklch(from var(--color-border) l c h / 0.3);
+  box-sizing: border-box;
 }
 .tape-row.buy  { color: var(--color-success); }
 .tape-row.sell { color: var(--color-notification); }

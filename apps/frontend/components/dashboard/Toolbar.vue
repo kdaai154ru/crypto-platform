@@ -36,27 +36,28 @@
         />
       </div>
 
-      <button class="btn-sm" @click="toggleEdit">
-        {{ editMode ? '✓ Done' : '⊞ Edit' }}
+      <!-- editMode теперь из layoutStore, нет нужды в provide/inject -->
+      <button class="btn-sm" @click="layoutStore.editMode = !layoutStore.editMode">
+        {{ layoutStore.editMode ? '✓ Done' : '⊞ Edit' }}
       </button>
       <button class="btn-sm btn-primary" @click="pickerOpen = true">
         + Widget
       </button>
     </div>
 
-    <!-- WidgetPicker внутри root-div → нет фрагмента → нет Vue warn -->
+    <!-- WidgetPicker внутри root-div — нет фрагмента, нет Vue warn -->
     <DashboardWidgetPicker :open="pickerOpen" @close="pickerOpen = false" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, inject } from 'vue'
+import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { Ref } from 'vue'
 import { useSymbolStore } from '~/stores/symbol.store'
+import { useLayoutStore } from '~/stores/layout.store'
 import { useWsClient } from '~/composables/useWsClient'
 
-const editMode    = inject<Ref<boolean>>('editMode')!
+const layoutStore = useLayoutStore()
 const pickerOpen  = ref(false)
 const symbolStore = useSymbolStore()
 const { activeTf } = storeToRefs(symbolStore)
@@ -82,8 +83,6 @@ function setTheme(t: string) {
   if (typeof document !== 'undefined')
     document.documentElement.setAttribute('data-theme', t)
 }
-
-function toggleEdit() { editMode.value = !editMode.value }
 </script>
 
 <style scoped>
@@ -98,7 +97,6 @@ function toggleEdit() { editMode.value = !editMode.value }
   flex-shrink: 0;
   overflow: visible;
 }
-
 .toolbar-logo {
   display: flex;
   align-items: center;
@@ -108,19 +106,13 @@ function toggleEdit() { editMode.value = !editMode.value }
   color: var(--color-text);
   white-space: nowrap;
 }
-
 .toolbar-symbol {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   flex: 1;
 }
-
-.tf-tabs {
-  display: flex;
-  gap: 2px;
-}
-
+.tf-tabs { display: flex; gap: 2px; }
 .tf-btn {
   padding: 2px 8px;
   border-radius: var(--radius-sm);
@@ -134,22 +126,15 @@ function toggleEdit() { editMode.value = !editMode.value }
 }
 .tf-btn:hover { color: var(--color-text); background: var(--color-surface-offset); }
 .tf-btn.active { color: var(--color-primary); border-color: var(--color-primary); background: var(--color-primary-highlight); }
-
 .toolbar-right {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   margin-left: auto;
 }
-
-.ws-dot {
-  display: inline-block;
-  width: 8px; height: 8px;
-  border-radius: 50%;
-}
+.ws-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .ws-dot.connected    { background: var(--color-success); box-shadow: 0 0 6px var(--color-success); }
 .ws-dot.disconnected { background: var(--color-text-faint); }
-
 .theme-selector { display: flex; gap: 4px; }
 .theme-btn {
   width: 14px; height: 14px;
@@ -163,7 +148,6 @@ function toggleEdit() { editMode.value = !editMode.value }
 .theme-btn.theme-dim   { background: #1e1e2e; }
 .theme-btn.theme-gray  { background: #313244; }
 .theme-btn.theme-light { background: #f7f6f2; border: 2px solid var(--color-border); }
-
 .btn-sm {
   padding: 4px 10px;
   border-radius: var(--radius-sm);
@@ -176,9 +160,6 @@ function toggleEdit() { editMode.value = !editMode.value }
   white-space: nowrap;
 }
 .btn-sm:hover { color: var(--color-text); border-color: var(--color-text-muted); }
-.btn-sm.btn-primary {
-  color: var(--color-primary);
-  border-color: var(--color-primary);
-}
+.btn-sm.btn-primary { color: var(--color-primary); border-color: var(--color-primary); }
 .btn-sm.btn-primary:hover { background: var(--color-primary-highlight); }
 </style>

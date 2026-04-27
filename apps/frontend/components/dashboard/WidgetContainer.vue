@@ -35,8 +35,15 @@
     </div>
 
     <!-- body -->
+    <!-- widgetProps передаётся только тем виджетам, у которых есть settings -->
+    <!-- чтобы не генерировать Vue warn о неизвестных props -->
     <div class="widget-body">
-      <component :is="widgetComponent" v-bind="widgetSettings" />
+      <component
+        :is="widgetComponent"
+        v-if="hasSettings"
+        v-bind="widgetProps"
+      />
+      <component :is="widgetComponent" v-else />
     </div>
 
     <!-- resize handle — только в Edit-режиме -->
@@ -78,6 +85,11 @@ function lazy(imp: () => Promise<unknown>) {
   })
 }
 
+// Виджеты, которые принимают settings-props (symbol, tf)
+const SETTINGS_WIDGETS = new Set([
+  'chart', 'trades-tape', 'oi-chart', 'funding-chart',
+])
+
 const WIDGET_MAP: Record<string, ReturnType<typeof defineAsyncComponent>> = {
   'chart':           lazy(() => import('~/components/widgets/ChartWidget.vue')),
   'trades-tape':     lazy(() => import('~/components/widgets/TradesTapeWidget.vue')),
@@ -114,6 +126,11 @@ const moduleError     = computed(() => sysStore.widgetHasError(props.item.type))
 const widgetComponent = computed(() => WIDGET_MAP[props.item.type] ?? WIDGET_MAP['market-overview'])
 const widgetTitle     = computed(() => TITLES[props.item.type] ?? props.item.type)
 const isSymbolWidget  = computed(() => SYMBOL_WIDGETS.has(props.item.type))
+const hasSettings     = computed(() =>
+  SETTINGS_WIDGETS.has(props.item.type) &&
+  props.item.settings &&
+  Object.keys(props.item.settings).length > 0
+)
 
 const statusDotStatus = computed(() => {
   if (!moduleError.value) return 'online'
@@ -121,7 +138,8 @@ const statusDotStatus = computed(() => {
   return 'offline'
 })
 
-const widgetSettings = computed(() => props.item.settings ?? {})
+// Передаём settings только виджетам, которые их ожидают
+const widgetProps = computed(() => props.item.settings ?? {})
 </script>
 
 <style scoped>
@@ -139,8 +157,6 @@ const widgetSettings = computed(() => props.item.settings ?? {})
   border-color: var(--color-primary);
   box-shadow: 0 0 0 1px var(--color-primary-highlight);
 }
-
-/* ── Drag handle ── */
 .widget-drag-handle {
   display: flex;
   align-items: center;
@@ -155,8 +171,6 @@ const widgetSettings = computed(() => props.item.settings ?? {})
   flex-shrink: 0;
 }
 .widget-drag-handle:active { cursor: grabbing; }
-
-/* ── Error overlay ── */
 .widget-error-overlay {
   position: absolute;
   top: 0; left: 0; right: 0;
@@ -170,8 +184,6 @@ const widgetSettings = computed(() => props.item.settings ?? {})
 }
 .error-title { font-size: var(--text-xs); font-weight: 500; color: var(--color-warning); }
 .error-sub   { font-size: var(--text-xs); color: var(--color-text-muted); }
-
-/* ── Widget header ── */
 .widget-header {
   display: flex;
   align-items: center;
@@ -188,14 +200,10 @@ const widgetSettings = computed(() => props.item.settings ?? {})
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-
-/* ── Status dot ── */
 .status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .status-dot.online   { background: var(--color-success); }
 .status-dot.degraded { background: var(--color-warning); }
 .status-dot.offline  { background: var(--color-error); }
-
-/* ── Body ── */
 .widget-body {
   flex: 1;
   overflow: hidden;
@@ -210,8 +218,6 @@ const widgetSettings = computed(() => props.item.settings ?? {})
   color: var(--color-text-muted);
   font-size: var(--text-sm);
 }
-
-/* ── Resize handle ── */
 .widget-resize-handle {
   position: absolute;
   bottom: 4px;

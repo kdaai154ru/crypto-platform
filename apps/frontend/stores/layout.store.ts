@@ -5,13 +5,15 @@ import type { DashboardLayout, WidgetLayout } from '@crypto-platform/types'
 import { useLayoutPersistence } from '~/composables/useLayoutPersistence'
 
 export const useLayoutStore = defineStore('layout', () => {
-  const layouts = ref<DashboardLayout[]>([])
-  const active  = ref<string | null>(null)
+  const layouts   = ref<DashboardLayout[]>([])
+  const active    = ref<string | null>(null)
+  // editMode перенесён из DashboardGrid сюда, чтобы Toolbar мог его читать
+  // через store вместо хрупкого provide/inject
+  const editMode  = ref(false)
   const { load, save } = useLayoutPersistence()
 
   function init() {
     const stored = load()
-    // Если нет сохранённого или версия старая — сбрасываем на дефолт
     if (!stored.length) {
       reset()
     } else {
@@ -21,6 +23,7 @@ export const useLayoutStore = defineStore('layout', () => {
   }
 
   function reset() {
+    editMode.value = false
     const def = defaultLayout()
     layouts.value = [def]
     active.value  = def.id
@@ -43,10 +46,6 @@ export const useLayoutStore = defineStore('layout', () => {
     save(layouts.value)
   }
 
-  /**
-   * Добавить виджет. Если виджет с таким type уже есть — просто
-   * делаем его visible (toggle on), не дублируем.
-   */
   function addWidget(w: WidgetLayout) {
     const cur = currentLayout()
     if (!cur) return
@@ -62,10 +61,6 @@ export const useLayoutStore = defineStore('layout', () => {
     updateWidgets(cur.breakpoints.lg)
   }
 
-  /**
-   * Toggle visible для виджета по type.
-   * Если виджета нет — добавляет как новый.
-   */
   function toggleWidget(type: string, def: Omit<WidgetLayout, 'i' | 'x' | 'y' | 'visible'>) {
     const cur = currentLayout()
     if (!cur) return
@@ -127,7 +122,7 @@ export const useLayoutStore = defineStore('layout', () => {
   }
 
   return {
-    layouts, active,
+    layouts, active, editMode,
     init, reset, currentLayout, currentWidgets,
     updateWidgets, addWidget, toggleWidget, isWidgetVisible, updateWidgetSettings,
   }

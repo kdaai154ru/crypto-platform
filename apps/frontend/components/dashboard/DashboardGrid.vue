@@ -5,10 +5,7 @@
     <DashboardStatusBar />
     <div class="dashboard-main">
       <div v-if="ready" class="dash-grid-wrapper" ref="gridRef">
-        <div
-          class="native-grid"
-          :style="gridStyle"
-        >
+        <div class="native-grid" :style="gridStyle">
           <!-- Ghost placeholder при drag/resize -->
           <div
             v-if="ghost"
@@ -21,7 +18,7 @@
             :key="item.i"
             class="grid-cell"
             :class="{
-              'is-edit': editMode,
+              'is-edit': layoutStore.editMode,
               'is-dragging': drag?.id === item.i,
               'is-resizing': resize?.id === item.i,
             }"
@@ -29,7 +26,7 @@
           >
             <DashboardWidgetContainer
               :item="item"
-              :edit-mode="editMode"
+              :edit-mode="layoutStore.editMode"
               @drag-start="(e: MouseEvent) => startDrag(e, item.i)"
               @resize-start="(e: MouseEvent) => startResize(e, item.i)"
             />
@@ -41,36 +38,39 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useLayoutStore } from '~/stores/layout.store'
 import type { WidgetLayout } from '@crypto-platform/types'
 
 const layoutStore = useLayoutStore()
-const editMode    = ref(false)
 const ready       = ref(false)
 const gridRef     = ref<HTMLElement | null>(null)
 
 // Константы сетки
 const COLS  = 24
-const ROW_H = 80   // px на одну строку
-const GAP   = 6    // px
+const ROW_H = 80
+const GAP   = 6
 const MIN_W = 2
 const MIN_H = 2
 
-// ─── Состояние drag ──────────────────────────────────────────────────────────────────────
+// Реальная ширина контейнера — обновляется через ResizeObserver
+const containerW = ref(1200)
+let ro: ResizeObserver | null = null
+
+// ─── Состояние drag/resize ────────────────────────────────────────────────────
 interface DragState {
   id: string
   startMouseX: number; startMouseY: number
   origX: number; origY: number
   origW: number; origH: number
-  colW: number; rowH: number
+  colW: number
 }
 interface ResizeState {
   id: string
   startMouseX: number; startMouseY: number
   origW: number; origH: number
   origX: number; origY: number
-  colW: number; rowH: number
+  colW: number
 }
 interface GhostRect { x: number; y: number; w: number; h: number }
 
@@ -78,12 +78,11 @@ const drag   = ref<DragState | null>(null)
 const resize = ref<ResizeState | null>(null)
 const ghost  = ref<GhostRect | null>(null)
 
-// ─── Данные сетки ──────────────────────────────────────────────────────────────────────────
+// ─── Данные сетки ─────────────────────────────────────────────────────────────
 const visibleItems = computed<WidgetLayout[]>(() =>
   (layoutStore.currentLayout()?.breakpoints.lg ?? []).filter(w => w.visible !== false)
 )
 
-// Высота сетки = (maxRow + 1) * (ROW_H + GAP)
 const gridStyle = computed(() => {
   const rows = visibleItems.value.reduce((m, w) => Math.max(m, w.y + w.h), 0)
   return {
@@ -93,26 +92,26 @@ const gridStyle = computed(() => {
   }
 })
 
-// ─── CSS: ячейка → абсолютное позиционирование ─────────────────────────────────────────────────
+// ─── CSS: ячейка → абсолютное позиционирование ───────────────────────────────
 function cellStyle(x: number, y: number, w: number, h: number) {
-  const containerW = gridRef.value?.clientWidth ?? 1200
-  const colW = (containerW - GAP * (COLS + 1)) / COLS
+  const colW = (containerW.value - GAP * (COLS + 1)) / COLS
   return {
     position:  'absolute' as const,
     left:  `${GAP + x * (colW + GAP)}px`,
     top:   `${GAP + y * (ROW_H + GAP)}px`,
     width: `${w * colW + (w - 1) * GAP}px`,
     height:`${h * ROW_H + (h - 1) * GAP}px`,
-    transition: (drag.value || resize.value) ? 'none' : 'left 180ms ease, top 180ms ease, width 180ms ease, height 180ms ease',
+    transition: (drag.value || resize.value)
+      ? 'none'
+      : 'left 180ms ease, top 180ms ease, width 180ms ease, height 180ms ease',
   }
 }
 
 function getColW(): number {
-  const containerW = gridRef.value?.clientWidth ?? 1200
-  return (containerW - GAP * (COLS + 1)) / COLS
+  return (containerW.value - GAP * (COLS + 1)) / COLS
 }
 
-// ─── Snap px → grid-unit ───────────────────────────────────────────────────────────────────────────────────────
+// ─── Snap px → grid-unit ──────────────────────────────────────────────────────
 function snapX(px: number, colW: number): number {
   return Math.max(0, Math.min(COLS - 1, Math.round(px / (colW + GAP))))
 }
@@ -126,7 +125,7 @@ function snapH(px: number): number {
   return Math.max(MIN_H, Math.round((px + GAP) / (ROW_H + GAP)))
 }
 
-// ─── Коллизии: сдвигаем виджеты вниз ───────────────────────────────────────────────────────────────────────
+// ─── Коллизии ─────────────────────────────────────────────────────────────────
 function resolveCollisions(items: WidgetLayout[], moved: WidgetLayout): WidgetLayout[] {
   const sorted = [...items].sort((a, b) => a.y - b.y || a.x - b.x)
   const result: WidgetLayout[] = []
@@ -148,9 +147,9 @@ function overlaps(a: WidgetLayout, b: WidgetLayout): boolean {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
 }
 
-// ─── Drag: start ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// ─── Drag ─────────────────────────────────────────────────────────────────────
 function startDrag(e: MouseEvent, id: string) {
-  if (!editMode.value) return
+  if (!layoutStore.editMode) return
   const item = visibleItems.value.find(w => w.i === id)
   if (!item) return
   e.preventDefault()
@@ -160,14 +159,14 @@ function startDrag(e: MouseEvent, id: string) {
     startMouseX: e.clientX, startMouseY: e.clientY,
     origX: item.x, origY: item.y,
     origW: item.w, origH: item.h,
-    colW, rowH: ROW_H,
+    colW,
   }
   ghost.value = { x: item.x, y: item.y, w: item.w, h: item.h }
 }
 
-// ─── Resize: start ─────────────────────────────────────────────────────────────────────────────────────────────
+// ─── Resize ───────────────────────────────────────────────────────────────────
 function startResize(e: MouseEvent, id: string) {
-  if (!editMode.value) return
+  if (!layoutStore.editMode) return
   const item = visibleItems.value.find(w => w.i === id)
   if (!item) return
   e.preventDefault()
@@ -178,12 +177,12 @@ function startResize(e: MouseEvent, id: string) {
     startMouseX: e.clientX, startMouseY: e.clientY,
     origW: item.w, origH: item.h,
     origX: item.x, origY: item.y,
-    colW, rowH: ROW_H,
+    colW,
   }
   ghost.value = { x: item.x, y: item.y, w: item.w, h: item.h }
 }
 
-// ─── Mouse move (window-level) ─────────────────────────────────────────────────────────────────────────────
+// ─── Mouse move ───────────────────────────────────────────────────────────────
 function onMouseMove(e: MouseEvent) {
   if (drag.value) {
     const d = drag.value
@@ -203,17 +202,15 @@ function onMouseMove(e: MouseEvent) {
   }
 }
 
-// ─── Mouse up: фиксируем позицию ──────────────────────────────────────────────────────────────────────────
+// ─── Mouse up ─────────────────────────────────────────────────────────────────
 function onMouseUp() {
-  if (!ghost.value && !drag.value && !resize.value) return
+  if (!drag.value && !resize.value) return
 
   const cur = layoutStore.currentLayout()
-  if (!cur) { drag.value = null; resize.value = null; ghost.value = null; return }
+  const g   = ghost.value
+  const id  = drag.value?.id ?? resize.value?.id
 
-  const g = ghost.value
-  const id = drag.value?.id ?? resize.value?.id
-
-  if (id && g) {
+  if (cur && id && g) {
     const updated = cur.breakpoints.lg.map(w =>
       w.i === id ? { ...w, x: g.x, y: g.y, w: g.w, h: g.h } : w
     )
@@ -230,15 +227,26 @@ function onMouseUp() {
 onMounted(() => {
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup',   onMouseUp)
+
+  // ResizeObserver для точной ширины контейнера
+  if (gridRef.value) {
+    containerW.value = gridRef.value.clientWidth || 1200
+    ro = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect.width
+      if (w) containerW.value = w
+    })
+    ro.observe(gridRef.value)
+  }
+
   layoutStore.init()
   ready.value = true
 })
+
 onUnmounted(() => {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup',   onMouseUp)
+  ro?.disconnect()
 })
-
-provide('editMode', editMode)
 </script>
 
 <style>

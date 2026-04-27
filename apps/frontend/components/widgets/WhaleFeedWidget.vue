@@ -5,24 +5,26 @@
       <span class="feed-title">Whale Feed</span>
       <span class="feed-sym">{{ symbolStore.activeSymbol }}</span>
     </div>
-    <div class="feed-list">
-      <div v-for="w in whales" :key="w._key" class="whale-row">
+    <!-- виртуальный список -->
+    <div class="feed-list" ref="listEl" @scroll.passive="onScroll">
+      <div :style="{ height: topSpacerH + 'px' }" />
+      <div v-for="w in visibleWhales" :key="w._key" class="whale-row">
         <span :class="['whale-side', w.side]">{{ w.side.toUpperCase() }}</span>
         <span class="whale-pair">{{ w.symbol }}</span>
         <span class="whale-qty">${{ fmtNum(w.usdValue) }}</span>
         <span class="whale-ex">{{ w.exchange }}</span>
         <span class="whale-time">{{ fmtTime(w.ts) }}</span>
       </div>
+      <div :style="{ height: botSpacerH + 'px' }" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useWsClient } from '~/composables/useWsClient'
 import { useSymbolStore } from '~/stores/symbol.store'
 
-// Отвечает NormalizedTrade + _key для v-for
 interface WhaleTrade {
   _key:     string
   symbol:   string
@@ -35,13 +37,28 @@ interface WhaleTrade {
   tradeId?: string
 }
 
+const ROW_H   = 26
+const VISIBLE = 25
+const MAX     = 200
+
 const symbolStore = useSymbolStore()
 const { subscribe, unsubscribe, onReady } = useWsClient()
-const whales = ref<WhaleTrade[]>([])
-const MAX = 50
+const whales    = ref<WhaleTrade[]>([])
+const listEl    = ref<HTMLElement | null>(null)
+const scrollTop = ref(0)
 let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 let _counter = 0
+
+const startIdx     = computed(() => Math.max(0, Math.floor(scrollTop.value / ROW_H) - 3))
+const endIdx       = computed(() => Math.min(whales.value.length, startIdx.value + VISIBLE + 6))
+const visibleWhales = computed(() => whales.value.slice(startIdx.value, endIdx.value))
+const topSpacerH   = computed(() => startIdx.value * ROW_H)
+const botSpacerH   = computed(() => (whales.value.length - endIdx.value) * ROW_H)
+
+function onScroll() {
+  if (listEl.value) scrollTop.value = listEl.value.scrollTop
+}
 
 function mountSub(sym: string) {
   if (currentCb) { unsubscribe('whale_event', currentSymbol, currentCb); currentCb = null }
@@ -77,11 +94,23 @@ function fmtTime(ts: number): string {
 
 <style scoped>
 .whale-feed { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-.feed-header { display: flex; align-items: center; justify-content: space-between; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-divider); flex-shrink: 0; }
+.feed-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-divider); flex-shrink: 0;
+}
 .feed-title { font-size: var(--text-xs); color: var(--color-text-muted); font-weight: 600; }
 .feed-sym   { font-size: var(--text-xs); color: var(--color-primary); font-weight: 700; }
 .feed-list  { flex: 1; overflow-y: auto; }
-.whale-row  { display: grid; grid-template-columns: 50px 90px 1fr 70px 50px; padding: 3px var(--space-3); font-size: 11px; border-bottom: 1px solid oklch(from var(--color-border) l c h / 0.3); }
+.whale-row  {
+  display: grid;
+  grid-template-columns: 50px 90px 1fr 70px 50px;
+  padding: 3px var(--space-3);
+  height: 26px;
+  font-size: 11px;
+  border-bottom: 1px solid oklch(from var(--color-border) l c h / 0.3);
+  box-sizing: border-box;
+}
 .whale-side        { font-weight: 700; }
 .whale-side.buy    { color: var(--color-success); }
 .whale-side.sell   { color: var(--color-notification); }
