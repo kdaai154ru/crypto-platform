@@ -6,14 +6,17 @@
            :style="`background:${rsiBackground(cell.rsi)};border-radius:4px;padding:5px 4px;text-align:center`">
         <div style="font-size:9px;color:rgba(255,255,255,0.7);margin-bottom:1px">{{ cell.symbol.replace('/USDT','') }}</div>
         <div style="font-size:12px;font-weight:600;color:#fff;font-variant-numeric:tabular-nums">
-          {{ cell.rsi?.toFixed(0) ?? '—' }}
+          {{ cell.rsi?.toFixed(0) ?? '\u2014' }}
         </div>
       </div>
     </div>
   </div>
 </template>
+
 <script setup lang="ts">
+import { ref, computed } from 'vue'
 import { useWidgetSubscription } from '~/composables/useWidgetSubscription'
+
 const cells = ref<{ symbol: string; rsi: number }[]>([])
 
 function rsiBackground(v?: number) {
@@ -24,8 +27,10 @@ function rsiBackground(v?: number) {
   return `rgba(${Math.round(norm*248)}, ${Math.round((1-norm)*200+50)}, 100, 0.5)`
 }
 
-// ws-gateway sends type='screener_update' (underscore), not 'screener:update'
-useWidgetSubscription('heatmap-rsi', ['screener_update'], '', (_, d) => {
+// broadcast-канал — symbol не используется, но useWidgetSubscription требует Ref<string>
+const emptySymbol = computed(() => '')
+
+useWidgetSubscription('heatmap-rsi', ['screener_update'], emptySymbol, (_, d) => {
   const arr = d as any[]
   for (const r of arr) {
     if (r.screener !== 'rsi' || r.tf !== '1h') continue

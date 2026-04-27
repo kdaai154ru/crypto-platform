@@ -23,6 +23,7 @@
 </template>
 
 <script setup lang="ts">
+import { ref, computed } from 'vue'
 import type { ScreenerRow } from '@crypto-platform/types'
 import { useWidgetSubscription } from '~/composables/useWidgetSubscription'
 
@@ -40,8 +41,10 @@ const rsiColor = (v: number) =>
   v <= 30 ? 'bg-green-500/20 text-green-400' :
   'text-muted'
 
-// ws-gateway sends type='screener_update' (underscore), not 'screener:update'
-useWidgetSubscription('screener-rsi', ['screener_update'], '',
+// broadcast-канал — symbol не используется, но useWidgetSubscription требует Ref<string>
+const emptySymbol = computed(() => '')
+
+useWidgetSubscription('screener-rsi', ['screener_update'], emptySymbol,
   (_ch, data) => {
     const arr = data as ScreenerRow[]
     for (const r of arr) {

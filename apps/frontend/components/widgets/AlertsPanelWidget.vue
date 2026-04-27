@@ -9,11 +9,18 @@
     </div>
   </div>
 </template>
+
 <script setup lang="ts">
+import { ref, computed } from 'vue'
 import { useWidgetSubscription } from '~/composables/useWidgetSubscription'
+
 const alerts = ref<any[]>([])
-// ws-gateway sends type='alerts_triggered' (underscore), not 'alerts:triggered'
-useWidgetSubscription('alerts-panel', ['alerts_triggered'], '', (_, d) => {
-  alerts.value.unshift(d); if (alerts.value.length > 50) alerts.value.pop()
+
+// broadcast-канал — symbol не используется, но useWidgetSubscription требует Ref<string>
+const emptySymbol = computed(() => '')
+
+useWidgetSubscription('alerts-panel', ['alerts_triggered'], emptySymbol, (_, d) => {
+  alerts.value.unshift(d)
+  if (alerts.value.length > 50) alerts.value.pop()
 })
 </script>

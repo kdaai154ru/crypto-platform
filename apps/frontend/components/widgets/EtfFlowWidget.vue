@@ -10,9 +10,17 @@
     </div>
   </div>
 </template>
+
 <script setup lang="ts">
+import { ref, computed } from 'vue'
 import { useWidgetSubscription } from '~/composables/useWidgetSubscription'
+
 const latest = ref<any>(null)
-// ws-gateway sends type='etf_latest' (underscore), not 'etf:latest'
-useWidgetSubscription('etf-flow', ['etf_latest'], '', (_, d) => { latest.value = d })
+
+// broadcast-канал — symbol не используется, но useWidgetSubscription требует Ref<string>
+const emptySymbol = computed(() => '')
+
+useWidgetSubscription('etf-flow', ['etf_latest'], emptySymbol, (_, d) => {
+  latest.value = d
+})
 </script>
