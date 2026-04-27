@@ -18,8 +18,10 @@ export class StatusBroadcaster {
     activeClients: number
   ): Promise<void> {
     const publicModules: PublicModuleState[] = modules.map(m => ({
-      id: m.id,
-      status: m.status,
+      id:        m.id,
+      status:    m.status,
+      uptimeMs:  m.uptimeMs,   // FIX: was missing — frontend needs this for Uptime column
+      startedAt: m.startedAt,  // FIX: was missing — frontend can compute live uptime from this
     }));
 
     const payload = {
@@ -34,9 +36,8 @@ export class StatusBroadcaster {
     try {
       await Promise.all([
         this.valkey.set('system:status:modules', JSON.stringify(publicModules), 'EX', 60),
-        // FIX: кэшируем последний payload для initial-state push в ws-gateway
+        // Кэшируем последний payload для initial-state push в ws-gateway
         this.valkey.set('system:status:latest', json, 'EX', 120),
-        // FIX: НЕ перезаписываем system:status:exchanges — это зона ответственности exchange-core
         this.valkey.xadd(
           'system:status',
           'MAXLEN',
