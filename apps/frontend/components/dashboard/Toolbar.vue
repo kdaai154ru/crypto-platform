@@ -12,11 +12,11 @@
 
     <!-- Global Symbol Selector -->
     <div class="toolbar-symbol">
-      <DashboardSymbolSelector v-model="symbolStore.activeSymbol.value" />
+      <DashboardSymbolSelector />
       <div class="tf-tabs">
         <button
           v-for="t in TFS" :key="t"
-          :class="['tf-btn', symbolStore.activeTf.value === t && 'active']"
+          :class="['tf-btn', activeTf === t && 'active']"
           @click="symbolStore.setTf(t)"
         >{{ t }}</button>
       </div>
@@ -50,6 +50,7 @@
 
 <script setup lang="ts">
 import { ref, inject } from 'vue'
+import { storeToRefs } from 'pinia'
 import type { Ref } from 'vue'
 import { useLayoutStore } from '~/stores/layout.store'
 import { useSymbolStore } from '~/stores/symbol.store'
@@ -60,6 +61,7 @@ const editMode    = inject<Ref<boolean>>('editMode')!
 const pickerOpen  = ref(false)
 const layoutStore = useLayoutStore()
 const symbolStore = useSymbolStore()
+const { activeTf } = storeToRefs(symbolStore)
 const { connected } = useWsClient()
 
 const TFS = ['1m', '5m', '15m', '1h', '4h', '1d']
@@ -97,6 +99,7 @@ function onAddWidget(w: WidgetLayout) { layoutStore.addWidget(w) }
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
+  overflow: visible;
 }
 
 .toolbar-logo {

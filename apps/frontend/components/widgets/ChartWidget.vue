@@ -5,12 +5,15 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { createChart, type IChartApi, type ISeriesApi, CandlestickSeries } from 'lightweight-charts'
 import { useWsClient } from '~/composables/useWsClient'
 import { useSymbolStore } from '~/stores/symbol.store'
 import type { NormalizedCandle } from '@crypto-platform/types'
 
 const symbolStore = useSymbolStore()
+const { activeSymbol } = storeToRefs(symbolStore)
+
 const chartEl = ref<HTMLElement | null>(null)
 let chart: IChartApi | null = null
 let series: ISeriesApi<'Candlestick'> | null = null
@@ -22,6 +25,7 @@ let currentSymbol = ''
 function mountSub(sym: string) {
   if (currentCb) unsubscribe('candle', currentSymbol, currentCb)
   currentSymbol = sym
+  series?.setData([])
   currentCb = (d: unknown) => {
     const c = d as NormalizedCandle & { symbol?: string }
     if (c.symbol && c.symbol !== sym) return
@@ -45,15 +49,15 @@ onMounted(() => {
     borderVisible: false,
     wickUpColor: '#22c55e', wickDownColor: '#ef4444',
   })
-  if (connected.value) mountSub(symbolStore.activeSymbol)
+  if (connected.value) mountSub(activeSymbol.value)
 })
 
-watch(() => symbolStore.activeSymbol, (sym) => {
+watch(activeSymbol, (sym) => {
   if (sym && connected.value) mountSub(sym)
 })
 
 watch(connected, (v) => {
-  if (v) mountSub(symbolStore.activeSymbol)
+  if (v) mountSub(activeSymbol.value)
   else { if (currentCb) unsubscribe('candle', currentSymbol, currentCb); currentCb = null }
 })
 

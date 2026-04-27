@@ -3,7 +3,7 @@
   <div class="trades-tape">
     <div class="tape-header">
       <span class="tape-title">Trades</span>
-      <span class="tape-symbol">{{ symbolStore.activeSymbol }}</span>
+      <span class="tape-symbol">{{ activeSymbol }}</span>
     </div>
     <div class="tape-list" ref="listEl">
       <div
@@ -21,11 +21,13 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useWsClient } from '~/composables/useWsClient'
 import { useSymbolStore } from '~/stores/symbol.store'
 import type { NormalizedTrade } from '@crypto-platform/types'
 
 const symbolStore = useSymbolStore()
+const { activeSymbol } = storeToRefs(symbolStore)
 const { subscribe, unsubscribe, connected } = useWsClient()
 
 const trades = ref<NormalizedTrade[]>([])
@@ -51,14 +53,14 @@ function mountSub(sym: string) {
   subscribe('trades', sym, currentCb)
 }
 
-onMounted(() => { if (connected.value) mountSub(symbolStore.activeSymbol) })
+onMounted(() => { if (connected.value) mountSub(activeSymbol.value) })
 
-watch(() => symbolStore.activeSymbol, (sym) => {
+watch(activeSymbol, (sym) => {
   if (sym && connected.value) mountSub(sym)
 })
 
 watch(connected, (v) => {
-  if (v) mountSub(symbolStore.activeSymbol)
+  if (v) mountSub(activeSymbol.value)
   else { if (currentCb) unsubscribe('trades', currentSymbol, currentCb); currentCb = null }
 })
 
