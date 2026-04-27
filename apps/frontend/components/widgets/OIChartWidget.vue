@@ -16,7 +16,7 @@ import { useWsClient } from '~/composables/useWsClient'
 import { useSymbolStore } from '~/stores/symbol.store'
 
 const symbolStore = useSymbolStore()
-const { subscribe, unsubscribe, connected } = useWsClient()
+const { subscribe, unsubscribe, onReady } = useWsClient()
 const chartEl = ref<HTMLElement | null>(null)
 let chart: IChartApi | null = null
 let series: ISeriesApi<'Area'> | null = null
@@ -24,14 +24,14 @@ let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 
 function mountSub(sym: string) {
-  if (currentCb) unsubscribe('oi_update', currentSymbol, currentCb)
+  if (currentCb) { unsubscribe('deriv_oi', currentSymbol, currentCb); currentCb = null }
   currentSymbol = sym
   currentCb = (d: unknown) => {
     const p = d as { symbol?: string; ts: number; oi: number }
     if (p.symbol && p.symbol !== sym) return
     series?.update({ time: Math.floor(p.ts / 1000) as unknown as import('lightweight-charts').Time, value: p.oi })
   }
-  subscribe('oi_update', sym, currentCb)
+  subscribe('deriv_oi', sym, currentCb)
 }
 
 onMounted(() => {
@@ -44,15 +44,11 @@ onMounted(() => {
   series = chart.addSeries(AreaSeries, {
     lineColor: '#4f98a3', topColor: 'rgba(79,152,163,0.3)', bottomColor: 'rgba(79,152,163,0)',
   })
-  if (connected.value) mountSub(symbolStore.activeSymbol)
+  onReady(() => mountSub(symbolStore.activeSymbol))
 })
 
-watch(() => symbolStore.activeSymbol, (sym) => { if (sym && connected.value) mountSub(sym) })
-watch(connected, (v) => {
-  if (v) mountSub(symbolStore.activeSymbol)
-  else { if (currentCb) unsubscribe('oi_update', currentSymbol, currentCb); currentCb = null }
-})
-onUnmounted(() => { if (currentCb) unsubscribe('oi_update', currentSymbol, currentCb); chart?.remove() })
+watch(() => symbolStore.activeSymbol, (sym) => { if (sym && chart) mountSub(sym) })
+onUnmounted(() => { if (currentCb) unsubscribe('deriv_oi', currentSymbol, currentCb); chart?.remove() })
 </script>
 
 <style scoped>

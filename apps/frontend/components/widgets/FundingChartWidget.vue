@@ -16,7 +16,7 @@ import { useWsClient } from '~/composables/useWsClient'
 import { useSymbolStore } from '~/stores/symbol.store'
 
 const symbolStore = useSymbolStore()
-const { subscribe, unsubscribe, connected } = useWsClient()
+const { subscribe, unsubscribe, onReady } = useWsClient()
 const chartEl = ref<HTMLElement | null>(null)
 let chart: IChartApi | null = null
 let series: ISeriesApi<'Histogram'> | null = null
@@ -24,7 +24,7 @@ let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 
 function mountSub(sym: string) {
-  if (currentCb) unsubscribe('funding_update', currentSymbol, currentCb)
+  if (currentCb) { unsubscribe('deriv_fund', currentSymbol, currentCb); currentCb = null }
   currentSymbol = sym
   currentCb = (d: unknown) => {
     const p = d as { symbol?: string; ts: number; rate: number }
@@ -35,7 +35,7 @@ function mountSub(sym: string) {
       color: p.rate >= 0 ? '#22c55e' : '#ef4444',
     })
   }
-  subscribe('funding_update', sym, currentCb)
+  subscribe('deriv_fund', sym, currentCb)
 }
 
 onMounted(() => {
@@ -46,15 +46,11 @@ onMounted(() => {
     autoSize: true,
   })
   series = chart.addSeries(HistogramSeries, { color: '#4f98a3' })
-  if (connected.value) mountSub(symbolStore.activeSymbol)
+  onReady(() => mountSub(symbolStore.activeSymbol))
 })
 
-watch(() => symbolStore.activeSymbol, (sym) => { if (sym && connected.value) mountSub(sym) })
-watch(connected, (v) => {
-  if (v) mountSub(symbolStore.activeSymbol)
-  else { if (currentCb) unsubscribe('funding_update', currentSymbol, currentCb); currentCb = null }
-})
-onUnmounted(() => { if (currentCb) unsubscribe('funding_update', currentSymbol, currentCb); chart?.remove() })
+watch(() => symbolStore.activeSymbol, (sym) => { if (sym && chart) mountSub(sym) })
+onUnmounted(() => { if (currentCb) unsubscribe('deriv_fund', currentSymbol, currentCb); chart?.remove() })
 </script>
 
 <style scoped>

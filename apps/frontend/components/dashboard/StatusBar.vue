@@ -44,7 +44,7 @@
               <td>{{ m.id }}</td>
               <td><span :class="`text-${m.status}`">● {{ m.status }}</span></td>
               <td class="num">{{ formatUptime(m.uptimeMs) }}</td>
-              <td class="num" style="color:var(--color-text-muted)">{{ m.restarts }}</td>
+              <td class="num" style="color:var(--color-text-muted)">{{ m.restarts ?? '—' }}</td>
             </tr>
           </tbody>
         </table>
@@ -72,10 +72,9 @@ const systemDotStatus = computed(() => {
   return 'online'
 })
 
-// FIX: ExchangeStatus = 'online' | 'degraded' | 'offline' — was incorrectly checking 'connected'
 function exDotClass(s: ExchangeStatus | string) {
-  if (s === 'online')    return 'online'
-  if (s === 'degraded')  return 'degraded'
+  if (s === 'online')   return 'online'
+  if (s === 'degraded') return 'degraded'
   return 'offline'
 }
 
@@ -85,10 +84,19 @@ function exTextStyle(s: ExchangeStatus | string) {
   return 'color:var(--color-error)'
 }
 
-function formatUptime(ms: number) {
-  if (!ms) return '—'
-  const h = Math.floor(ms / 3_600_000)
-  const m = Math.floor((ms % 3_600_000) / 60_000)
-  return `${h}h ${m}m`
+/**
+ * Format uptimeMs to human-readable string.
+ * Returns '—' if value is falsy (null, undefined, 0).
+ * ws-gateway sends uptimeMs = Date.now() - startTime; 0 means not started yet.
+ */
+function formatUptime(ms: number | undefined | null): string {
+  if (!ms || ms <= 0) return '—'
+  const totalSec = Math.floor(ms / 1000)
+  const d = Math.floor(totalSec / 86400)
+  const h = Math.floor((totalSec % 86400) / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
 }
 </script>

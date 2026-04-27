@@ -1,10 +1,6 @@
 <!-- apps/frontend/components/widgets/TradesTapeWidget.vue -->
 <template>
   <div class="trades-tape">
-    <div class="tape-header">
-      <span class="tape-title">Trades</span>
-      <span class="tape-symbol">{{ activeSymbol }}</span>
-    </div>
     <div class="tape-list" ref="listEl">
       <div
         v-for="t in trades"
@@ -20,7 +16,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, watch, onUnmounted, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWsClient } from '~/composables/useWsClient'
 import { useSymbolStore } from '~/stores/symbol.store'
@@ -28,7 +24,7 @@ import type { NormalizedTrade } from '@crypto-platform/types'
 
 const symbolStore = useSymbolStore()
 const { activeSymbol } = storeToRefs(symbolStore)
-const { subscribe, unsubscribe, connected } = useWsClient()
+const { subscribe, unsubscribe, onReady } = useWsClient()
 
 const trades = ref<NormalizedTrade[]>([])
 const listEl = ref<HTMLElement | null>(null)
@@ -38,7 +34,7 @@ let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 
 function mountSub(sym: string) {
-  if (currentCb) unsubscribe('trades', currentSymbol, currentCb)
+  if (currentCb) { unsubscribe('trades', currentSymbol, currentCb); currentCb = null }
   currentSymbol = sym
   trades.value  = []
   currentCb = (d: unknown) => {
@@ -46,27 +42,14 @@ function mountSub(sym: string) {
     if (t.symbol && t.symbol !== sym) return
     trades.value.unshift(t)
     if (trades.value.length > MAX) trades.value.length = MAX
-    nextTick(() => {
-      if (listEl.value) listEl.value.scrollTop = 0
-    })
+    nextTick(() => { if (listEl.value) listEl.value.scrollTop = 0 })
   }
   subscribe('trades', sym, currentCb)
 }
 
-onMounted(() => { if (connected.value) mountSub(activeSymbol.value) })
-
-watch(activeSymbol, (sym) => {
-  if (sym && connected.value) mountSub(sym)
-})
-
-watch(connected, (v) => {
-  if (v) mountSub(activeSymbol.value)
-  else { if (currentCb) unsubscribe('trades', currentSymbol, currentCb); currentCb = null }
-})
-
-onUnmounted(() => {
-  if (currentCb) unsubscribe('trades', currentSymbol, currentCb)
-})
+onReady(() => mountSub(activeSymbol.value))
+watch(activeSymbol, (sym) => { if (sym) mountSub(sym) })
+onUnmounted(() => { if (currentCb) unsubscribe('trades', currentSymbol, currentCb) })
 
 function fmtTime(ts: number): string {
   const d = new Date(ts)
@@ -76,18 +59,7 @@ function fmtTime(ts: number): string {
 
 <style scoped>
 .trades-tape { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-
-.tape-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--color-divider);
-  flex-shrink: 0;
-}
-.tape-title  { font-size: var(--text-xs); color: var(--color-text-muted); font-weight: 600; }
-.tape-symbol { font-size: var(--text-xs); color: var(--color-primary); font-weight: 700; }
-
 .tape-list { flex: 1; overflow-y: auto; }
-
 .tape-row {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;

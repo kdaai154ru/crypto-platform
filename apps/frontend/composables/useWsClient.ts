@@ -2,28 +2,37 @@
 import { ref } from 'vue'
 
 // Must stay in sync with BROADCAST_WS_CHANNELS in apps/ws-gateway/src/valkey-streams.ts.
-// Broadcast channels are delivered to ALL clients automatically by ws-gateway —
-// no subscribe message needed, and pendingSubs must NOT track them.
 const BROADCAST_CHANNELS = new Set([
   'system_status',
   'screener_update',
   'options_update',
   'etf_latest',
-  'alerts_triggered', // FIX: was missing — ws-gateway broadcasts this, no subscribe needed
+  'alerts_triggered',
 ])
 
-// ── Singleton state (модульный уровень, создаётся один раз) ──
+// ── Singleton state ──
 const connected = ref(false)
 const clientId  = ref<string | null>(null)
 let   ws: WebSocket | null = null
 let   reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 const handlers    = new Map<string, Set<(data: unknown) => void>>()
-const pendingSubs = new Map<string, Set<string>>() // channel → Set of symbols
+const pendingSubs = new Map<string, Set<string>>()
+
+// Callbacks registered via onReady() — called immediately if already
+// connected, otherwise queued and flushed on the next successful connect.
+const readyQueue = new Set<() => void>()
 
 let initialized = false
 let connecting  = false
 let cachedWsUrl: string | null = null
+
+function flushReadyQueue() {
+  for (const cb of readyQueue) {
+    try { cb() } catch {/* ignore */}
+  }
+  readyQueue.clear()
+}
 
 function connect() {
   if (connecting || (ws && ws.readyState < 2)) return
@@ -35,13 +44,14 @@ function connect() {
   ws.onopen = () => {
     connecting = false
     connected.value = true
-    // Восстанавливаем только symbol-specific подписки после реконнекта.
-    // Broadcast-каналы ws-gateway доставляет всем автоматически — пропускаем.
+    // Restore symbol-specific subscriptions after reconnect
     for (const [channel, symbols] of pendingSubs) {
       for (const symbol of symbols) {
         ws!.send(JSON.stringify({ type: 'subscribe', channels: [channel], symbol }))
       }
     }
+    // Fire all pending onReady callbacks
+    flushReadyQueue()
   }
 
   ws.onclose = () => {
@@ -52,9 +62,7 @@ function connect() {
     reconnectTimer = setTimeout(connect, 3000)
   }
 
-  ws.onerror = () => {
-    ws?.close()
-  }
+  ws.onerror = () => { ws?.close() }
 
   ws.onmessage = (e) => {
     try {
@@ -74,17 +82,32 @@ export function useWsClient() {
     connect()
   }
 
+  /**
+   * Register a callback to run once the WS is open.
+   * - If already connected: runs synchronously on next microtask tick.
+   * - If not yet connected: queued and called on first successful open.
+   * Returns an unregister function (call it onUnmounted).
+   */
+  function onReady(cb: () => void): () => void {
+    if (!import.meta.client) return () => {}
+    if (connected.value) {
+      // Already open — schedule for next tick so caller's setup is complete
+      Promise.resolve().then(cb)
+    } else {
+      readyQueue.add(cb)
+    }
+    return () => readyQueue.delete(cb)
+  }
+
   function subscribe(channel: string, symbol: string, cb: (d: unknown) => void) {
     if (!handlers.has(channel)) handlers.set(channel, new Set())
     const set = handlers.get(channel)!
-
     if (set.has(cb)) return
     set.add(cb)
 
     if (!BROADCAST_CHANNELS.has(channel)) {
       if (!pendingSubs.has(channel)) pendingSubs.set(channel, new Set())
       pendingSubs.get(channel)!.add(symbol)
-
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'subscribe', channels: [channel], symbol }))
       }
@@ -94,9 +117,7 @@ export function useWsClient() {
   function unsubscribe(channel: string, symbol: string, cb: (d: unknown) => void) {
     const set = handlers.get(channel)
     if (!set) return
-
     set.delete(cb)
-
     if (set.size === 0) {
       handlers.delete(channel)
       if (!BROADCAST_CHANNELS.has(channel)) {
@@ -110,10 +131,10 @@ export function useWsClient() {
     }
   }
 
-  return { connected, clientId, subscribe, unsubscribe }
+  return { connected, clientId, subscribe, unsubscribe, onReady }
 }
 
-// HMR: закрываем старый сокет при hot reload
+// HMR cleanup
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     ws?.close()
@@ -123,6 +144,7 @@ if (import.meta.hot) {
     cachedWsUrl = null
     handlers.clear()
     pendingSubs.clear()
+    readyQueue.clear()
     if (reconnectTimer) clearTimeout(reconnectTimer)
   })
 }

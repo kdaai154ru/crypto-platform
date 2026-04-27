@@ -1,30 +1,36 @@
 // apps/frontend/composables/useSystemStatus.ts
-//
-// FIX #4: единственный источник подписки на system_status.
-// Обновляет глобальный sysStore напрямую — StatusBar.vue и любые другие
-// компоненты читают useSystemStore() и всегда видят актуальные данные
-// независимо от того, с какой страницы они рендерятся.
-//
-// Использование: вызвать useSystemStatus() в любом компоненте или layout.
-// Повторные вызовы безопасны — callback-guard в useWsClient предотвращает
-// дублирование (if (set.has(cb)) return).
 import { onScopeDispose } from 'vue'
 import { useSystemStore } from '~/stores/system.store'
 import type { SystemStatusPayload } from '@crypto-platform/types'
 
 export function useSystemStatus() {
   const sysStore = useSystemStore()
-  const { subscribe, unsubscribe } = useWsClient()
+  const { subscribe, unsubscribe, onReady } = useWsClient()
 
   function handler(data: unknown) {
     sysStore.update(data as SystemStatusPayload)
   }
 
-  subscribe('system_status', '', handler)
+  // Register handler immediately — broadcast channel, no subscribe msg needed.
+  // onReady ensures the handler is in place before WS starts delivering frames.
+  let cancelReady: (() => void) | null = null
 
-  // Удаляем callback когда scope уничтожается (компонент/layout размонтирован)
-  onScopeDispose(() => unsubscribe('system_status', '', handler))
+  function mount() {
+    subscribe('system_status', '', handler)
+  }
 
-  // Возвращаем sysStore напрямую — нет смысла дублировать payload в локальный ref
+  cancelReady = onReady(mount)
+
+  // Also subscribe right away for the case WS was already open before
+  // this composable was called (e.g. HMR reload with live socket)
+  if (import.meta.client) {
+    subscribe('system_status', '', handler)
+  }
+
+  onScopeDispose(() => {
+    unsubscribe('system_status', '', handler)
+    cancelReady?.()
+  })
+
   return sysStore
 }

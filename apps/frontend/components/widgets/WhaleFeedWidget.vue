@@ -18,30 +18,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { useWsClient } from '~/composables/useWsClient'
 import { useSymbolStore } from '~/stores/symbol.store'
 
 interface WhaleTrade {
-  id: string
-  symbol: string
-  side: 'buy' | 'sell'
-  qty: number
-  price: number
-  usdValue: number
-  exchange: string
-  ts: number
+  id: string; symbol: string; side: 'buy' | 'sell'
+  qty: number; price: number; usdValue: number
+  exchange: string; ts: number
 }
 
 const symbolStore = useSymbolStore()
-const { subscribe, unsubscribe, connected } = useWsClient()
+const { subscribe, unsubscribe, onReady } = useWsClient()
 const whales = ref<WhaleTrade[]>([])
 const MAX = 50
 let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 
 function mountSub(sym: string) {
-  if (currentCb) unsubscribe('whale_trade', currentSymbol, currentCb)
+  if (currentCb) { unsubscribe('whale_event', currentSymbol, currentCb); currentCb = null }
   currentSymbol = sym
   whales.value  = []
   currentCb = (d: unknown) => {
@@ -50,16 +45,12 @@ function mountSub(sym: string) {
     whales.value.unshift(w)
     if (whales.value.length > MAX) whales.value.length = MAX
   }
-  subscribe('whale_trade', sym, currentCb)
+  subscribe('whale_event', sym, currentCb)
 }
 
-onMounted(() => { if (connected.value) mountSub(symbolStore.activeSymbol) })
-watch(() => symbolStore.activeSymbol, (sym) => { if (sym && connected.value) mountSub(sym) })
-watch(connected, (v) => {
-  if (v) mountSub(symbolStore.activeSymbol)
-  else { if (currentCb) unsubscribe('whale_trade', currentSymbol, currentCb); currentCb = null }
-})
-onUnmounted(() => { if (currentCb) unsubscribe('whale_trade', currentSymbol, currentCb) })
+onReady(() => mountSub(symbolStore.activeSymbol))
+watch(() => symbolStore.activeSymbol, (sym) => { if (sym) mountSub(sym) })
+onUnmounted(() => { if (currentCb) unsubscribe('whale_event', currentSymbol, currentCb) })
 
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'

@@ -12,7 +12,6 @@
     <div class="widget-header">
       <span class="widget-title">{{ widgetTitle }}</span>
       <div style="display:flex;align-items:center;gap:6px">
-        <!-- Symbol selector — показываем только для виджетов с symbol в settings -->
         <DashboardSymbolSelector
           v-if="localSymbol !== null"
           v-model="localSymbol"
@@ -21,17 +20,10 @@
       </div>
     </div>
 
-    <!-- body -->
+    <!-- body: no <Suspense> — it's experimental and causes console warnings.
+         defineAsyncComponent handles loading/error states internally. -->
     <div class="widget-body">
-      <Suspense>
-        <component :is="widgetComponent" v-bind="mergedSettings" />
-        <template #fallback>
-          <div class="widget-empty">
-            <span class="widget-empty-icon">⏳</span>
-            <span>Loading…</span>
-          </div>
-        </template>
-      </Suspense>
+      <component :is="widgetComponent" v-bind="mergedSettings" />
     </div>
   </div>
 </template>
@@ -46,20 +38,32 @@ const props       = defineProps<{ item: WidgetLayout }>()
 const sysStore    = useSystemStore()
 const layoutStore = useLayoutStore()
 
-// Lazy-load каждый виджет отдельно — не тянем всё сразу
+const LoadingWidget = { template: '<div class="widget-empty"><span>Loading…</span></div>' }
+const ErrorWidget   = { template: '<div class="widget-empty"><span style="color:var(--color-error)">Failed to load</span></div>' }
+
+function lazy(imp: () => Promise<unknown>) {
+  return defineAsyncComponent({
+    loader: imp as () => Promise<{ default: object }>,
+    loadingComponent: LoadingWidget,
+    errorComponent: ErrorWidget,
+    delay: 100,
+    timeout: 10000,
+  })
+}
+
 const WIDGET_MAP: Record<string, ReturnType<typeof defineAsyncComponent>> = {
-  'chart':           defineAsyncComponent(() => import('~/components/widgets/ChartWidget.vue')),
-  'trades-tape':     defineAsyncComponent(() => import('~/components/widgets/TradesTapeWidget.vue')),
-  'screener-rsi':    defineAsyncComponent(() => import('~/components/widgets/ScreenerRsiWidget.vue')),
-  'oi-chart':        defineAsyncComponent(() => import('~/components/widgets/OIChartWidget.vue')),
-  'funding-chart':   defineAsyncComponent(() => import('~/components/widgets/FundingChartWidget.vue')),
-  'market-overview': defineAsyncComponent(() => import('~/components/widgets/MarketOverviewWidget.vue')),
-  'status-panel':    defineAsyncComponent(() => import('~/components/widgets/StatusPanelWidget.vue')),
-  'whale-feed':      defineAsyncComponent(() => import('~/components/widgets/WhaleFeedWidget.vue')),
-  'etf-flow':        defineAsyncComponent(() => import('~/components/widgets/EtfFlowWidget.vue')),
-  'options-panel':   defineAsyncComponent(() => import('~/components/widgets/OptionsPanelWidget.vue')),
-  'alerts-panel':    defineAsyncComponent(() => import('~/components/widgets/AlertsPanelWidget.vue')),
-  'heatmap-rsi':     defineAsyncComponent(() => import('~/components/widgets/HeatmapRsiWidget.vue')),
+  'chart':           lazy(() => import('~/components/widgets/ChartWidget.vue')),
+  'trades-tape':     lazy(() => import('~/components/widgets/TradesTapeWidget.vue')),
+  'screener-rsi':    lazy(() => import('~/components/widgets/ScreenerRsiWidget.vue')),
+  'oi-chart':        lazy(() => import('~/components/widgets/OIChartWidget.vue')),
+  'funding-chart':   lazy(() => import('~/components/widgets/FundingChartWidget.vue')),
+  'market-overview': lazy(() => import('~/components/widgets/MarketOverviewWidget.vue')),
+  'status-panel':    lazy(() => import('~/components/widgets/StatusPanelWidget.vue')),
+  'whale-feed':      lazy(() => import('~/components/widgets/WhaleFeedWidget.vue')),
+  'etf-flow':        lazy(() => import('~/components/widgets/EtfFlowWidget.vue')),
+  'options-panel':   lazy(() => import('~/components/widgets/OptionsPanelWidget.vue')),
+  'alerts-panel':    lazy(() => import('~/components/widgets/AlertsPanelWidget.vue')),
+  'heatmap-rsi':     lazy(() => import('~/components/widgets/HeatmapRsiWidget.vue')),
 }
 
 const TITLES: Record<string, string> = {
@@ -77,7 +81,6 @@ const TITLES: Record<string, string> = {
   'heatmap-rsi':     'RSI Heatmap',
 }
 
-// Виджеты у которых есть symbol в settings
 const SYMBOL_WIDGETS = new Set([
   'chart', 'trades-tape', 'oi-chart', 'funding-chart', 'whale-feed',
 ])
@@ -94,19 +97,16 @@ const statusDotStatus = computed(() => {
   return 'offline'
 })
 
-// localSymbol — null если виджет не использует symbol
 const localSymbol = ref<string | null>(
   SYMBOL_WIDGETS.has(props.item.type)
     ? (props.item.settings?.symbol as string ?? 'BTC/USDT')
     : null
 )
 
-// При смене symbol — обновляем store (персистируем) и передаём в виджет
 watch(localSymbol, (s) => {
   if (s !== null) layoutStore.updateWidgetSettings(props.item.i, { symbol: s })
 })
 
-// Итоговые props для виджета: settings + актуальный symbol
 const mergedSettings = computed(() => ({
   ...(props.item.settings ?? {}),
   ...(localSymbol.value !== null ? { symbol: localSymbol.value } : {}),

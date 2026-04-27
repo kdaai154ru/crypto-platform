@@ -13,17 +13,16 @@ import type { NormalizedCandle } from '@crypto-platform/types'
 
 const symbolStore = useSymbolStore()
 const { activeSymbol } = storeToRefs(symbolStore)
+const { subscribe, unsubscribe, onReady } = useWsClient()
 
 const chartEl = ref<HTMLElement | null>(null)
 let chart: IChartApi | null = null
 let series: ISeriesApi<'Candlestick'> | null = null
-
-const { subscribe, unsubscribe, connected } = useWsClient()
 let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 
 function mountSub(sym: string) {
-  if (currentCb) unsubscribe('candle', currentSymbol, currentCb)
+  if (currentCb) { unsubscribe('candle', currentSymbol, currentCb); currentCb = null }
   currentSymbol = sym
   series?.setData([])
   currentCb = (d: unknown) => {
@@ -49,17 +48,12 @@ onMounted(() => {
     borderVisible: false,
     wickUpColor: '#22c55e', wickDownColor: '#ef4444',
   })
-  if (connected.value) mountSub(activeSymbol.value)
+  // onReady: fires when WS open (now or later), chart DOM is ready by onMounted
+  onReady(() => mountSub(activeSymbol.value))
 })
 
-watch(activeSymbol, (sym) => {
-  if (sym && connected.value) mountSub(sym)
-})
-
-watch(connected, (v) => {
-  if (v) mountSub(activeSymbol.value)
-  else { if (currentCb) unsubscribe('candle', currentSymbol, currentCb); currentCb = null }
-})
+// Symbol change — WS already open at this point
+watch(activeSymbol, (sym) => { if (sym && chart) mountSub(sym) })
 
 onUnmounted(() => {
   if (currentCb) unsubscribe('candle', currentSymbol, currentCb)
