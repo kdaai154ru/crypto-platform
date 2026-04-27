@@ -4,137 +4,269 @@
     <DashboardToolbar />
     <DashboardStatusBar />
     <div class="dashboard-main">
-      <div v-if="ready" class="dash-grid-wrapper">
-        <grid-layout
-          v-model:layout="gridLayout"
-          :col-num="24"
-          :row-height="ROW_H"
-          :margin="[GAP, GAP]"
-          :is-draggable="editMode"
-          :is-resizable="editMode"
-          :use-css-transforms="true"
-          :auto-size="true"
-          :vertical-compact="true"
-          @layout-updated="onLayoutUpdated"
+      <div v-if="ready" class="dash-grid-wrapper" ref="gridRef">
+        <div
+          class="native-grid"
+          :style="gridStyle"
+          @mousemove="onMouseMove"
+          @mouseup="onMouseUp"
+          @mouseleave="onMouseUp"
         >
-          <grid-item
-            v-for="item in gridLayout"
+          <!-- Ghost placeholder при drag/resize -->
+          <div
+            v-if="ghost"
+            class="grid-ghost"
+            :style="cellStyle(ghost.x, ghost.y, ghost.w, ghost.h)"
+          />
+
+          <div
+            v-for="item in visibleItems"
             :key="item.i"
-            :x="item.x"
-            :y="item.y"
-            :w="item.w"
-            :h="item.h"
-            :i="item.i"
-            :min-w="2"
-            :min-h="2"
-            drag-allow-from=".widget-drag-handle"
+            class="grid-cell"
+            :class="{
+              'is-edit': editMode,
+              'is-dragging': drag?.id === item.i,
+              'is-resizing': resize?.id === item.i,
+            }"
+            :style="cellStyle(item.x, item.y, item.w, item.h)"
           >
-            <DashboardWidgetContainer :item="toWidgetLayout(item)" :edit-mode="editMode" />
-          </grid-item>
-        </grid-layout>
+            <DashboardWidgetContainer
+              :item="item"
+              :edit-mode="editMode"
+              @drag-start="(e: MouseEvent) => startDrag(e, item.i)"
+              @resize-start="(e: MouseEvent) => startResize(e, item.i)"
+            />
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, provide, onMounted } from 'vue'
-import { GridLayout, GridItem } from 'vue-grid-layout'
+import { ref, computed, watch, provide, onMounted, onUnmounted } from 'vue'
 import { useLayoutStore } from '~/stores/layout.store'
 import type { WidgetLayout } from '@crypto-platform/types'
 
 const layoutStore = useLayoutStore()
 const editMode    = ref(false)
 const ready       = ref(false)
+const gridRef     = ref<HTMLElement | null>(null)
 
-const ROW_H = 80
-const GAP   = 6
+// Константы сетки
+const COLS  = 24
+const ROW_H = 80   // px на одну строку
+const GAP   = 6    // px
+const MIN_W = 2
+const MIN_H = 2
 
-type GridEntry = { i: string; x: number; y: number; w: number; h: number }
-
-const gridLayout = ref<GridEntry[]>([])
-
-// Флаг: предотвращает реакцию watch'а во время обработки onLayoutUpdated
-let _updatingFromGrid = false
-
-function buildGrid() {
-  if (_updatingFromGrid) return
-  const widgets = layoutStore.currentLayout()?.breakpoints.lg ?? []
-  gridLayout.value = widgets
-    .filter(w => w.visible !== false)
-    .map(w => ({ i: w.i, x: w.x, y: w.y, w: w.w, h: w.h }))
+// ─── Состояние drag ────────────────────────────────────────────────────────
+interface DragState {
+  id: string
+  startMouseX: number; startMouseY: number
+  origX: number; origY: number
+  origW: number; origH: number
+  colW: number; rowH: number
 }
+interface ResizeState {
+  id: string
+  startMouseX: number; startMouseY: number
+  origW: number; origH: number
+  origX: number; origY: number
+  colW: number; rowH: number
+}
+interface GhostRect { x: number; y: number; w: number; h: number }
 
-// Следим только за списком видимых виджетов (по id через join),
-// чтобы не реагировать на каждое изменение позиции
-const storeVisibleIds = computed(() =>
-  (layoutStore.currentLayout()?.breakpoints.lg ?? [])
-    .filter(w => w.visible !== false)
-    .map(w => w.i)
-    .join(',')
+const drag   = ref<DragState | null>(null)
+const resize = ref<ResizeState | null>(null)
+const ghost  = ref<GhostRect | null>(null)
+
+// ─── Данные сетки ──────────────────────────────────────────────────────────
+const visibleItems = computed<WidgetLayout[]>(() =>
+  (layoutStore.currentLayout()?.breakpoints.lg ?? []).filter(w => w.visible !== false)
 )
-watch(storeVisibleIds, buildGrid)
 
-// После drag/resize vue-grid-layout вызывает этот хук — сохраняем позиции в store
-function onLayoutUpdated(newLayout: GridEntry[]) {
-  _updatingFromGrid = true
-  const cur = layoutStore.currentLayout()
-  if (cur) {
-    cur.breakpoints.lg = cur.breakpoints.lg.map(w => {
-      const g = newLayout.find(n => n.i === w.i)
-      return g ? { ...w, x: g.x, y: g.y, w: g.w, h: g.h } : w
-    })
-    layoutStore.updateWidgets(cur.breakpoints.lg)
+// Высота сетки = (maxRow + 1) * (ROW_H + GAP)
+const gridStyle = computed(() => {
+  const rows = visibleItems.value.reduce((m, w) => Math.max(m, w.y + w.h), 0)
+  return {
+    position: 'relative' as const,
+    width: '100%',
+    height: `${rows * (ROW_H + GAP) + GAP}px`,
   }
-  _updatingFromGrid = false
+})
+
+// ─── CSS: ячейка → абсолютное позиционирование ─────────────────────────────
+function cellStyle(x: number, y: number, w: number, h: number) {
+  // colW вычисляется динамически по ширине контейнера
+  const containerW = gridRef.value?.clientWidth ?? 1200
+  const colW = (containerW - GAP * (COLS + 1)) / COLS
+  return {
+    position:  'absolute' as const,
+    left:  `${GAP + x * (colW + GAP)}px`,
+    top:   `${GAP + y * (ROW_H + GAP)}px`,
+    width: `${w * colW + (w - 1) * GAP}px`,
+    height:`${h * ROW_H + (h - 1) * GAP}px`,
+    transition: (drag.value || resize.value) ? 'none' : 'left 180ms ease, top 180ms ease, width 180ms ease, height 180ms ease',
+  }
 }
 
-// Конвертируем запись grid обратно в WidgetLayout (c type, visible, settings)
-function toWidgetLayout(g: { i: string }): WidgetLayout {
-  return (
-    layoutStore.currentLayout()?.breakpoints.lg.find(w => w.i === g.i)
-    ?? { i: g.i, type: 'market-overview', x: 0, y: 0, w: 4, h: 4, visible: true }
-  )
+function getColW(): number {
+  const containerW = gridRef.value?.clientWidth ?? 1200
+  return (containerW - GAP * (COLS + 1)) / COLS
 }
+
+// ─── Snap px → grid-unit ───────────────────────────────────────────────────
+function snapX(px: number, colW: number): number {
+  return Math.max(0, Math.min(COLS - 1, Math.round(px / (colW + GAP))))
+}
+function snapY(px: number): number {
+  return Math.max(0, Math.round(px / (ROW_H + GAP)))
+}
+function snapW(px: number, colW: number): number {
+  return Math.max(MIN_W, Math.round((px + GAP) / (colW + GAP)))
+}
+function snapH(px: number): number {
+  return Math.max(MIN_H, Math.round((px + GAP) / (ROW_H + GAP)))
+}
+
+// ─── Коллизии: сдвигаем виджеты вниз ──────────────────────────────────────
+function resolveCollisions(items: WidgetLayout[], moved: WidgetLayout): WidgetLayout[] {
+  const sorted = [...items].sort((a, b) => a.y - b.y || a.x - b.x)
+  const result: WidgetLayout[] = []
+  for (const item of sorted) {
+    if (item.i === moved.i) { result.push(moved); continue }
+    let placed = { ...item }
+    // проверяем перекрытие с уже размещёнными
+    let loop = 0
+    while (loop++ < 50) {
+      const overlap = result.find(r => overlaps(r, placed) && r.i !== placed.i)
+      if (!overlap) break
+      placed = { ...placed, y: overlap.y + overlap.h }
+    }
+    result.push(placed)
+  }
+  return result
+}
+
+function overlaps(a: WidgetLayout, b: WidgetLayout): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+// ─── Drag: start ───────────────────────────────────────────────────────────
+function startDrag(e: MouseEvent, id: string) {
+  if (!editMode.value) return
+  const item = visibleItems.value.find(w => w.i === id)
+  if (!item) return
+  e.preventDefault()
+  const colW = getColW()
+  drag.value = {
+    id,
+    startMouseX: e.clientX, startMouseY: e.clientY,
+    origX: item.x, origY: item.y,
+    origW: item.w, origH: item.h,
+    colW, rowH: ROW_H,
+  }
+  ghost.value = { x: item.x, y: item.y, w: item.w, h: item.h }
+}
+
+// ─── Resize: start ─────────────────────────────────────────────────────────
+function startResize(e: MouseEvent, id: string) {
+  if (!editMode.value) return
+  const item = visibleItems.value.find(w => w.i === id)
+  if (!item) return
+  e.preventDefault()
+  e.stopPropagation()
+  const colW = getColW()
+  resize.value = {
+    id,
+    startMouseX: e.clientX, startMouseY: e.clientY,
+    origW: item.w, origH: item.h,
+    origX: item.x, origY: item.y,
+    colW, rowH: ROW_H,
+  }
+  ghost.value = { x: item.x, y: item.y, w: item.w, h: item.h }
+}
+
+// ─── Mouse move ────────────────────────────────────────────────────────────
+function onMouseMove(e: MouseEvent) {
+  if (drag.value) {
+    const d = drag.value
+    const dx = e.clientX - d.startMouseX
+    const dy = e.clientY - d.startMouseY
+    const newX = snapX(d.origX * (d.colW + GAP) + dx, d.colW)
+    const newY = snapY(d.origY * (ROW_H + GAP) + dy)
+    const newW = Math.min(d.origW, COLS - newX)
+    ghost.value = { x: newX, y: newY, w: newW, h: d.origH }
+  } else if (resize.value) {
+    const r = resize.value
+    const dx = e.clientX - r.startMouseX
+    const dy = e.clientY - r.startMouseY
+    const newW = Math.min(snapW(r.origW * (r.colW + GAP) - GAP + dx, r.colW), COLS - r.origX)
+    const newH = snapH(r.origH * (ROW_H + GAP) - GAP + dy)
+    ghost.value = { x: r.origX, y: r.origY, w: newW, h: newH }
+  }
+}
+
+// ─── Mouse up: фиксируем позицию ───────────────────────────────────────────
+function onMouseUp() {
+  if (!ghost.value) return
+
+  const cur = layoutStore.currentLayout()
+  if (!cur) { drag.value = null; resize.value = null; ghost.value = null; return }
+
+  const g = ghost.value
+  const id = drag.value?.id ?? resize.value?.id
+
+  if (id) {
+    const updated = cur.breakpoints.lg.map(w =>
+      w.i === id ? { ...w, x: g.x, y: g.y, w: g.w, h: g.h } : w
+    )
+    const movedItem = updated.find(w => w.i === id)!
+    const resolved  = resolveCollisions(updated, movedItem)
+    layoutStore.updateWidgets(resolved)
+  }
+
+  drag.value   = null
+  resize.value = null
+  ghost.value  = null
+}
+
+// ─── Глобальные события мыши (за пределами grid) ──────────────────────────
+function onWindowMouseMove(e: MouseEvent) { onMouseMove(e) }
+function onWindowMouseUp()               { onMouseUp() }
+
+onMounted(() => {
+  window.addEventListener('mousemove', onWindowMouseMove)
+  window.addEventListener('mouseup',   onWindowMouseUp)
+  layoutStore.init()
+  ready.value = true
+})
+onUnmounted(() => {
+  window.removeEventListener('mousemove', onWindowMouseMove)
+  window.removeEventListener('mouseup',   onWindowMouseUp)
+})
 
 provide('editMode', editMode)
-onMounted(() => { layoutStore.init(); buildGrid(); ready.value = true })
 </script>
 
 <style>
-/* Глобальные стили для vue-grid-layout */
-.vue-grid-layout {
-  background: transparent;
-}
-
-.vue-grid-item {
-  transition: none;
-  background: transparent;
-}
-
-.vue-grid-item.vue-grid-placeholder {
+.grid-ghost {
   background: var(--color-primary);
-  opacity: 0.15;
+  opacity: 0.12;
   border-radius: var(--radius-md);
   border: 2px dashed var(--color-primary);
+  pointer-events: none;
+  z-index: 0;
 }
-
-/* ручка resize в углу */
-.vue-grid-item .vue-resizable-handle {
-  bottom: 4px;
-  right: 4px;
-  width: 16px;
-  height: 16px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M11 5L5 11M14 8L8 14M14 11L11 14' stroke='%234f98a3' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: center;
-  opacity: 0;
-  transition: opacity 150ms;
+.grid-cell {
+  z-index: 1;
+  cursor: default;
 }
-
-.vue-grid-item:hover .vue-resizable-handle,
-.vue-grid-item.resizing .vue-resizable-handle {
-  opacity: 1;
+.grid-cell.is-dragging,
+.grid-cell.is-resizing {
+  z-index: 100;
+  opacity: 0.85;
 }
 </style>
 
@@ -145,14 +277,13 @@ onMounted(() => { layoutStore.init(); buildGrid(); ready.value = true })
   height: 100vh;
   overflow: hidden;
 }
-
 .dashboard-main {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
 }
-
 .dash-grid-wrapper {
-  padding: var(--space-2);
+  padding: 0;
+  user-select: none;
 }
 </style>

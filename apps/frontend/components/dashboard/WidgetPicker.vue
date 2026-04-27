@@ -20,7 +20,6 @@
             <span class="wpc-desc">{{ w.description }}</span>
           </button>
         </div>
-
         <div class="picker-footer">
           <button class="btn-picker-reset" @click="onReset">↺ Reset layout</button>
           <button class="btn-picker-done" @click="$emit('close')">Done</button>
@@ -33,17 +32,16 @@
 <script setup lang="ts">
 import { useLayoutStore } from '~/stores/layout.store'
 
-// inheritAttrs: false — компонент рендерит <Teleport> как корень (fragment),
-// Vue не может автоматически унаследовать listeners → отключаем наследование,
-// чтобы убрать предупреждение "Extraneous non-emits event listeners"
+// Компонент рендерит <Teleport> как корень (fragment/text) →
+// Vue не может унаследовать listeners автоматически.
+// inheritAttrs: false + явное defineEmits убирают Vue warn.
 defineOptions({ inheritAttrs: false })
 
 defineProps<{ open: boolean }>()
 
-// Объявляем все события явно — это устраняет Vue warn об «add»
 const emit = defineEmits<{
   close: []
-  add: [type: string]
+  add:   [type: string]
 }>()
 
 const layoutStore = useLayoutStore()
@@ -85,7 +83,6 @@ function onReset() {
   background: oklch(0 0 0 / 0.55);
   display: flex; align-items: center; justify-content: center;
 }
-
 .modal-box {
   background: var(--color-surface-2);
   border: 1px solid var(--color-border);
@@ -97,7 +94,6 @@ function onReset() {
   flex-direction: column;
   overflow: hidden;
 }
-
 .modal-header {
   display: flex;
   align-items: center;
@@ -106,23 +102,12 @@ function onReset() {
   border-bottom: 1px solid var(--color-divider);
   flex-shrink: 0;
 }
-
-.modal-title {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--color-text);
-}
-
+.modal-title { font-size: var(--text-sm); font-weight: 600; color: var(--color-text); }
 .modal-close {
-  font-size: 18px;
-  color: var(--color-text-muted);
-  line-height: 1;
-  padding: 0 4px;
-  border-radius: var(--radius-sm);
-  transition: color 120ms;
+  font-size: 18px; color: var(--color-text-muted); line-height: 1;
+  padding: 0 4px; border-radius: var(--radius-sm); transition: color 120ms;
 }
 .modal-close:hover { color: var(--color-text); }
-
 .widget-picker-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -130,73 +115,42 @@ function onReset() {
   padding: var(--space-4);
   overflow-y: auto;
 }
-
 .widget-picker-card {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  display: flex; flex-direction: column; align-items: flex-start;
   gap: var(--space-1);
   padding: var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
-  cursor: pointer;
-  text-align: left;
+  cursor: pointer; text-align: left;
   transition: border-color 120ms, background 120ms;
 }
-.widget-picker-card:hover {
-  border-color: var(--color-primary);
-  background: var(--color-surface-offset);
-}
-.widget-picker-card.wpc-active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-highlight);
-}
-
-.wpc-check {
-  position: absolute;
-  top: 6px; right: 8px;
-  font-size: 12px;
-  color: var(--color-primary);
-  font-weight: 700;
-}
-
+.widget-picker-card:hover { border-color: var(--color-primary); background: var(--color-surface-offset); }
+.widget-picker-card.wpc-active { border-color: var(--color-primary); background: var(--color-primary-highlight); }
+.wpc-check { position: absolute; top: 6px; right: 8px; font-size: 12px; color: var(--color-primary); font-weight: 700; }
 .wpc-icon  { font-size: 20px; line-height: 1; }
 .wpc-label { font-size: var(--text-xs); font-weight: 600; color: var(--color-text); }
 .wpc-desc  { font-size: 11px; color: var(--color-text-muted); line-height: 1.3; }
-
 .picker-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  display: flex; justify-content: space-between; align-items: center;
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--color-divider);
   flex-shrink: 0;
 }
-
 .btn-picker-reset {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border);
-  background: transparent;
-  cursor: pointer;
-  transition: all 120ms;
+  font-size: var(--text-xs); color: var(--color-text-muted);
+  padding: 4px 8px; border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border); background: transparent;
+  cursor: pointer; transition: all 120ms;
 }
 .btn-picker-reset:hover { color: var(--color-warning); border-color: var(--color-warning); }
-
 .btn-picker-done {
-  font-size: var(--text-xs);
-  font-weight: 600;
-  color: var(--color-primary);
-  padding: 4px 16px;
-  border-radius: var(--radius-sm);
+  font-size: var(--text-xs); font-weight: 600; color: var(--color-primary);
+  padding: 4px 16px; border-radius: var(--radius-sm);
   border: 1px solid var(--color-primary);
   background: var(--color-primary-highlight);
-  cursor: pointer;
-  transition: all 120ms;
+  cursor: pointer; transition: all 120ms;
 }
 .btn-picker-done:hover { background: var(--color-primary); color: white; }
 </style>

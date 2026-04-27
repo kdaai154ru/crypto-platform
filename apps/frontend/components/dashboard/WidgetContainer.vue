@@ -1,17 +1,21 @@
 <!-- apps/frontend/components/dashboard/WidgetContainer.vue -->
 <template>
   <div class="widget-container" :class="{ 'is-edit': editMode }">
-    <!-- ручка для драга — видна только в Edit-режиме -->
-    <div v-if="editMode" class="widget-drag-handle">
+    <!-- drag handle — видна только в Edit-режиме -->
+    <div
+      v-if="editMode"
+      class="widget-drag-handle"
+      @mousedown.stop="$emit('drag-start', $event)"
+    >
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
         <circle cx="4" cy="4" r="1.2" fill="currentColor"/>
         <circle cx="10" cy="4" r="1.2" fill="currentColor"/>
+        <circle cx="4" cy="7"  r="1.2" fill="currentColor"/>
+        <circle cx="10" cy="7"  r="1.2" fill="currentColor"/>
         <circle cx="4" cy="10" r="1.2" fill="currentColor"/>
         <circle cx="10" cy="10" r="1.2" fill="currentColor"/>
-        <circle cx="4" cy="7" r="1.2" fill="currentColor"/>
-        <circle cx="10" cy="7" r="1.2" fill="currentColor"/>
       </svg>
-      <span>в режиме редактирования</span>
+      <span>drag to move</span>
     </div>
 
     <!-- module error overlay -->
@@ -34,6 +38,17 @@
     <div class="widget-body">
       <component :is="widgetComponent" v-bind="widgetSettings" />
     </div>
+
+    <!-- resize handle — только в Edit-режиме -->
+    <div
+      v-if="editMode"
+      class="widget-resize-handle"
+      @mousedown.stop="$emit('resize-start', $event)"
+    >
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+        <path d="M9 3L3 9M11 6L6 11M11 9L9 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+    </div>
   </div>
 </template>
 
@@ -43,6 +58,11 @@ import type { WidgetLayout } from '@crypto-platform/types'
 import { useSystemStore } from '~/stores/system.store'
 
 const props = defineProps<{ item: WidgetLayout; editMode?: boolean }>()
+const emit  = defineEmits<{
+  'drag-start':   [e: MouseEvent]
+  'resize-start': [e: MouseEvent]
+}>()
+
 const sysStore = useSystemStore()
 
 const LoadingWidget = { template: '<div class="widget-empty"><span>Loading…</span></div>' }
@@ -115,12 +135,12 @@ const widgetSettings = computed(() => props.item.settings ?? {})
   overflow: hidden;
   position: relative;
 }
-
 .widget-container.is-edit {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 1px var(--color-primary-highlight);
 }
 
+/* ── Drag handle ── */
 .widget-drag-handle {
   display: flex;
   align-items: center;
@@ -132,9 +152,11 @@ const widgetSettings = computed(() => props.item.settings ?? {})
   cursor: grab;
   user-select: none;
   border-bottom: 1px solid var(--color-primary);
+  flex-shrink: 0;
 }
 .widget-drag-handle:active { cursor: grabbing; }
 
+/* ── Error overlay ── */
 .widget-error-overlay {
   position: absolute;
   top: 0; left: 0; right: 0;
@@ -146,18 +168,10 @@ const widgetSettings = computed(() => props.item.settings ?? {})
   border-bottom: 1px solid var(--color-warning);
   z-index: 10;
 }
+.error-title { font-size: var(--text-xs); font-weight: 500; color: var(--color-warning); }
+.error-sub   { font-size: var(--text-xs); color: var(--color-text-muted); }
 
-.error-title {
-  font-size: var(--text-xs);
-  font-weight: 500;
-  color: var(--color-warning);
-}
-
-.error-sub {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-}
-
+/* ── Widget header ── */
 .widget-header {
   display: flex;
   align-items: center;
@@ -167,7 +181,6 @@ const widgetSettings = computed(() => props.item.settings ?? {})
   flex-shrink: 0;
   min-height: 36px;
 }
-
 .widget-title {
   font-size: var(--text-xs);
   font-weight: 600;
@@ -176,23 +189,19 @@ const widgetSettings = computed(() => props.item.settings ?? {})
   letter-spacing: 0.05em;
 }
 
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
+/* ── Status dot ── */
+.status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .status-dot.online   { background: var(--color-success); }
 .status-dot.degraded { background: var(--color-warning); }
 .status-dot.offline  { background: var(--color-error); }
 
+/* ── Body ── */
 .widget-body {
   flex: 1;
   overflow: hidden;
   position: relative;
   min-height: 0;
 }
-
 .widget-empty {
   display: flex;
   align-items: center;
@@ -200,5 +209,27 @@ const widgetSettings = computed(() => props.item.settings ?? {})
   height: 100%;
   color: var(--color-text-muted);
   font-size: var(--text-sm);
+}
+
+/* ── Resize handle ── */
+.widget-resize-handle {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-primary);
+  cursor: se-resize;
+  opacity: 0;
+  transition: opacity 150ms;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-highlight);
+}
+.widget-container:hover .widget-resize-handle,
+.widget-container.is-edit .widget-resize-handle {
+  opacity: 1;
 }
 </style>

@@ -11,9 +11,6 @@ export default defineNuxtConfig({
       apiUrl: process.env["NUXT_PUBLIC_API_URL"] ?? "http://localhost:3001",
     }
   },
-  vite: {
-    optimizeDeps: { include: ['vue-grid-layout'] },
-  },
   typescript: { strict: true },
   app: { head: { title: "Crypto Analytics Platform" } }
 })
