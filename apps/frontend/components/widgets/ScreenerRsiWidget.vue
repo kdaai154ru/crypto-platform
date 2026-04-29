@@ -1,36 +1,34 @@
 <!-- apps/frontend/components/widgets/ScreenerRsiWidget.vue -->
 <template>
   <div class="h-full overflow-auto px-2 py-1">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--color-text-muted)">RSI Screener</span>
+      <span v-if="loading" style="font-size:10px;color:var(--color-text-faint)">Loading…</span>
+      <span v-if="error"   style="font-size:10px;color:#ef4444">{{ error }}</span>
+      <button class="refresh-btn" @click="loadAll" :disabled="loading">↻ Refresh</button>
+    </div>
     <table class="w-full text-xs screener-table">
       <thead>
         <tr class="text-muted border-b border-border">
-          <th
-            class="text-left pb-1 sortable"
-            :class="sortKey === 'symbol' ? 'sorted' : ''"
-            @click="setSort('symbol')"
-          >
-            Symbol
-            <span class="sort-arrow">{{ sortKey === 'symbol' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅' }}</span>
+          <th class="text-left pb-1 sortable" :class="sortKey==='symbol'?'sorted':''" @click="setSort('symbol')">
+            Symbol <span class="sort-arrow">{{ sortKey==='symbol'?(sortDir==='asc'?'▲':'▼'):'⇅' }}</span>
           </th>
-          <th
-            v-for="tf in tfs" :key="tf"
-            class="text-center pb-1 sortable"
-            :class="sortKey === tf ? 'sorted' : ''"
-            @click="setSort(tf)"
-          >
-            {{ tf }}
-            <span class="sort-arrow">{{ sortKey === tf ? (sortDir === 'asc' ? '▲' : '▼') : '⇅' }}</span>
+          <th v-for="tf in tfs" :key="tf"
+              class="text-center pb-1 sortable" :class="sortKey===tf?'sorted':''"
+              @click="setSort(tf)">
+            {{ tf }} <span class="sort-arrow">{{ sortKey===tf?(sortDir==='asc'?'▲':'▼'):'⇅' }}</span>
           </th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in sortedRows" :key="row.symbol" class="border-t border-border/50 hover:bg-surface-offset">
-          <td class="py-1 font-medium">{{ row.symbol }}</td>
+        <tr v-for="row in sortedRows" :key="row.symbol"
+            class="border-t hover:bg-surface-offset">
+          <td class="py-1 font-medium">{{ row.symbol.replace('USDT','') }}</td>
           <td v-for="tf in tfs" :key="tf" class="text-center">
-            <span v-if="row[tf] != null" :class="rsiColor(row[tf] as number)" class="px-1.5 py-0.5 rounded text-[10px]">
-              {{ (row[tf] as number).toFixed(1) }}
+            <span v-if="row[tf]!=null" :class="rsiColor(row[tf])" class="px-1 py-0.5 rounded text-[10px]">
+              {{ row[tf].toFixed(1) }}
             </span>
-            <span v-else class="text-faint">—</span>
+            <span v-else style="color:var(--color-text-faint)">—</span>
           </td>
         </tr>
       </tbody>
@@ -39,76 +37,128 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import type { ScreenerRow } from '@crypto-platform/types'
-import { useWidgetSubscription } from '~/composables/useWidgetSubscription'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
-const tfs = ['5m', '15m', '1h', '4h', '1d']
-const rows = ref<Map<string, Record<string, number>>>(new Map())
+const SYMBOLS = [
+  'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT',
+  'DOGEUSDT','ADAUSDT','AVAXUSDT','LINKUSDT','DOTUSDT',
+]
+const tfs = ['5m','15m','1h','4h','1d'] as const
+type TF = typeof tfs[number]
 
-// Сортировка
+type RowData = { symbol: string } & Partial<Record<TF, number>>
+
+const rows    = ref<Map<string, Partial<Record<TF, number>>>>(new Map())
+const loading = ref(false)
+const error   = ref('')
 const sortKey = ref<string>('symbol')
-const sortDir = ref<'asc' | 'desc'>('asc')
+const sortDir = ref<'asc'|'desc'>('asc')
+let timer: ReturnType<typeof setInterval> | null = null
 
-function setSort(key: string) {
-  if (sortKey.value === key) {
-    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
-  } else {
-    sortKey.value = key
-    sortDir.value = key === 'symbol' ? 'asc' : 'desc'
+// Точный Wilder RSI
+function calcRsi(closes: number[], period = 14): number | null {
+  if (closes.length < period + 1) return null
+  let gains = 0, losses = 0
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1]
+    if (diff > 0) gains  += diff
+    else          losses -= diff
+  }
+  let avgGain = gains  / period
+  let avgLoss = losses / period
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1]
+    avgGain = (avgGain * (period - 1) + (diff > 0 ? diff : 0)) / period
+    avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period
+  }
+  if (avgLoss === 0) return 100
+  const rs = avgGain / avgLoss
+  return 100 - (100 / (1 + rs))
+}
+
+async function fetchRsi(symbol: string, tf: TF): Promise<number | null> {
+  try {
+    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=100`
+    const res  = await fetch(url)
+    if (!res.ok) return null
+    const data: [number,string,string,string,string,...unknown[]][] = await res.json()
+    const closes = data.map(k => parseFloat(k[4]))
+    return calcRsi(closes)
+  } catch { return null }
+}
+
+async function loadAll() {
+  loading.value = true
+  error.value   = ''
+  try {
+    // Для каждого символа загружаем все TF параллельно
+    const tasks = SYMBOLS.flatMap(sym =>
+      tfs.map(async tf => {
+        const rsi = await fetchRsi(sym, tf)
+        if (!rows.value.has(sym)) rows.value.set(sym, {})
+        const r = rows.value.get(sym)!
+        if (rsi !== null) r[tf] = rsi
+      })
+    )
+    await Promise.allSettled(tasks)
+    // Триггер реактивности
+    rows.value = new Map(rows.value)
+  } catch (e) {
+    error.value = 'Fetch error'
+  } finally {
+    loading.value = false
   }
 }
 
-const tableRows = computed(() =>
-  [...rows.value.entries()].map(([symbol, r]) => ({ symbol, ...r }))
+const tableRows = computed((): RowData[] =>
+  [...rows.value.entries()].map(([symbol, r]) => ({ symbol, ...r } as RowData))
 )
-
 const sortedRows = computed(() => {
   const arr = [...tableRows.value]
-  const key = sortKey.value
-  const dir  = sortDir.value === 'asc' ? 1 : -1
+  const dir = sortDir.value === 'asc' ? 1 : -1
   arr.sort((a, b) => {
-    if (key === 'symbol') {
-      return a.symbol.localeCompare(b.symbol) * dir
-    }
-    const av = (a as Record<string, unknown>)[key] as number | undefined
-    const bv = (b as Record<string, unknown>)[key] as number | undefined
+    if (sortKey.value === 'symbol') return a.symbol.localeCompare(b.symbol) * dir
+    const av = (a as Record<string,number | undefined>)[sortKey.value]
+    const bv = (b as Record<string,number | undefined>)[sortKey.value]
     if (av == null && bv == null) return 0
     if (av == null) return 1
     if (bv == null) return -1
     return (av - bv) * dir
   })
-  return arr.slice(0, 50)
+  return arr
 })
 
+function setSort(key: string) {
+  sortKey.value === key
+    ? (sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc')
+    : (sortKey.value = key, sortDir.value = key === 'symbol' ? 'asc' : 'desc')
+}
+
 const rsiColor = (v: number) =>
-  v >= 70 ? 'bg-red-500/20 text-red-400' :
-  v <= 30 ? 'bg-green-500/20 text-green-400' :
-  'text-muted'
+  v >= 70 ? 'overbought' :
+  v <= 30 ? 'oversold'   :
+  'neutral'
 
-const emptySymbol = computed(() => '')
-
-useWidgetSubscription('screener-rsi', ['screener_update'], emptySymbol,
-  (_ch, data) => {
-    const arr = data as ScreenerRow[]
-    for (const r of arr) {
-      if (r.screener !== 'rsi') continue
-      const cur = rows.value.get(r.symbol) ?? {}
-      cur[r.tf] = r.value
-      rows.value.set(r.symbol, cur)
-    }
-  }
-)
+onMounted(() => {
+  loadAll()
+  timer = setInterval(loadAll, 60_000)  // обновляется каждую минуту
+})
+onUnmounted(() => { if (timer) clearInterval(timer) })
 </script>
 
 <style scoped>
-.screener-table th.sortable {
-  cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
-}
+.screener-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
 .screener-table th.sortable:hover { color: var(--color-text); }
-.screener-table th.sorted { color: var(--color-primary); }
-.sort-arrow { font-size: 9px; margin-left: 2px; opacity: 0.6; }
-.text-faint { color: var(--color-text-faint); }
+.screener-table th.sorted         { color: var(--color-primary); }
+.sort-arrow  { font-size: 9px; margin-left: 2px; opacity: 0.6; }
+.overbought  { background: rgba(239,68,68,0.15);  color: #f87171; padding: 1px 4px; border-radius: 3px; }
+.oversold    { background: rgba(34,197,94,0.15);  color: #4ade80; padding: 1px 4px; border-radius: 3px; }
+.neutral     { color: var(--color-text-muted); }
+.refresh-btn {
+  margin-left: auto; font-size: 10px; padding: 2px 8px;
+  border-radius: var(--radius-sm); border: 1px solid var(--color-border);
+  background: var(--color-surface); color: var(--color-text-muted); cursor: pointer;
+}
+.refresh-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.refresh-btn:disabled { opacity: 0.4; cursor: default; }
 </style>
