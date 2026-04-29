@@ -1,30 +1,64 @@
 <!-- apps/frontend/components/widgets/HeatmapRsiWidget.vue -->
 <template>
-  <div class="h-full overflow-auto p-2">
-    <div v-if="loading && cells.length===0" style="color:var(--color-text-faint);font-size:11px;padding:8px">Loading RSI…</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:3px">
-      <div v-for="cell in cells" :key="cell.symbol"
-           :style="`background:${rsiBackground(cell.rsi)};border-radius:4px;padding:5px 4px;text-align:center`">
-        <div style="font-size:9px;color:rgba(255,255,255,0.7);margin-bottom:1px">{{ cell.symbol.replace('USDT','') }}</div>
-        <div style="font-size:12px;font-weight:600;color:#fff;font-variant-numeric:tabular-nums">
-          {{ cell.rsi != null ? cell.rsi.toFixed(0) : '\u2014' }}
-        </div>
+  <div class="h-full flex flex-col overflow-hidden">
+    <!-- Хедер: выбор категории + кнопка добавить -->
+    <div class="hm-header">
+      <div class="hm-cats">
+        <button
+          v-for="cat in ['All','Memes','DeFi','L1','L2','AI','Gaming']" :key="cat"
+          class="hm-cat"
+          :class="{ active: filterCat === cat }"
+          @click="setCategory(cat)"
+        >{{ cat }}</button>
+      </div>
+      <button class="refresh-btn" @click="loadAll" :disabled="loading">↻</button>
+    </div>
+
+    <!-- Тепловая карта RSI -->
+    <div v-if="loading && cells.length===0" class="hm-loading">Loading RSI…</div>
+    <div class="hm-grid">
+      <div
+        v-for="cell in cells" :key="cell.symbol"
+        class="hm-cell"
+        :style="{ background: rsiBackground(cell.rsi) }"
+        :title="cell.symbol.replace('USDT','') + ': RSI=' + (cell.rsi?.toFixed(1) ?? '—')"
+      >
+        <div class="hm-sym">{{ cell.symbol.replace('USDT','') }}</div>
+        <div class="hm-val">{{ cell.rsi != null ? cell.rsi.toFixed(0) : '—' }}</div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useSymbolSearch, loadSymbols, CATEGORIES } from '~/composables/useSymbolSearch'
 
-const SYMBOLS = [
+// Список символов по умолчанию (топ 20 по капитализации)
+const DEFAULT_SYMBOLS = [
   'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT',
   'DOGEUSDT','ADAUSDT','AVAXUSDT','LINKUSDT','DOTUSDT',
   'MATICUSDT','LTCUSDT','UNIUSDT','ATOMUSDT','NEARUSDT',
+  'FILUSDT','APTUSDT','INJUSDT','TIAUSDT','SUIUSDT',
 ]
 
+const filterCat = ref('All')
+const { allSymbols } = useSymbolSearch()
+
+// Строим список символов по выбранной категории
+const activeSymbols = computed<string[]>(() => {
+  if (filterCat.value === 'All') return DEFAULT_SYMBOLS
+  const tags = CATEGORIES[filterCat.value] ?? []
+  if (!tags.length) return DEFAULT_SYMBOLS
+  // Берём до 25 символов из загруженных или фолбэк на DEFAULT
+  const base = allSymbols.value.length > 0 ? allSymbols.value : DEFAULT_SYMBOLS
+  return base
+    .filter(s => tags.some(t => s.startsWith(t + 'USDT') || s === t + 'USDT'))
+    .slice(0, 25)
+})
+
 const cells  = ref<{ symbol: string; rsi: number | null }[]>(
-  SYMBOLS.map(s => ({ symbol: s, rsi: null }))
+  DEFAULT_SYMBOLS.map(s => ({ symbol: s, rsi: null }))
 )
 const loading = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
@@ -58,11 +92,19 @@ async function fetchRsi1h(symbol: string): Promise<number | null> {
 
 async function loadAll() {
   loading.value = true
-  await Promise.allSettled(SYMBOLS.map(async (sym, idx) => {
+  const syms = activeSymbols.value.length > 0 ? activeSymbols.value : DEFAULT_SYMBOLS
+  // Сбрасываем ячейки под новый список
+  cells.value = syms.map(s => ({ symbol: s, rsi: null }))
+  await Promise.allSettled(syms.map(async (sym, idx) => {
     const rsi = await fetchRsi1h(sym)
     cells.value[idx].rsi = rsi
   }))
   loading.value = false
+}
+
+function setCategory(cat: string) {
+  filterCat.value = cat
+  loadAll()
 }
 
 function rsiBackground(v: number | null) {
@@ -74,8 +116,73 @@ function rsiBackground(v: number | null) {
 }
 
 onMounted(() => {
+  loadSymbols()  // загружаем символы для категорий
   loadAll()
   timer = setInterval(loadAll, 60_000)
 })
 onUnmounted(() => { if (timer) clearInterval(timer) })
 </script>
+
+<style scoped>
+.hm-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px var(--space-2);
+  border-bottom: 1px solid var(--color-divider);
+  flex-shrink: 0;
+}
+.hm-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  flex: 1;
+}
+.hm-cat {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-faint);
+  cursor: pointer;
+  transition: all var(--transition-interactive);
+}
+.hm-cat:hover  { border-color: var(--color-primary); color: var(--color-text-muted); }
+.hm-cat.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-inverse);
+}
+.refresh-btn {
+  font-size: 11px;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all var(--transition-interactive);
+}
+.refresh-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.refresh-btn:disabled { opacity: 0.4; cursor: default; }
+.hm-loading { font-size: 11px; color: var(--color-text-faint); padding: 8px; }
+.hm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 3px;
+  padding: var(--space-2);
+  overflow-y: auto;
+  flex: 1;
+}
+.hm-cell {
+  border-radius: 4px;
+  padding: 5px 4px;
+  text-align: center;
+  cursor: default;
+  transition: transform var(--transition-interactive);
+}
+.hm-cell:hover { transform: scale(1.05); }
+.hm-sym { font-size: 9px; color: rgba(255,255,255,0.7); margin-bottom: 1px; }
+.hm-val { font-size: 12px; font-weight: 600; color: #fff; font-variant-numeric: tabular-nums; }
+</style>
