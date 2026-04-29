@@ -5,7 +5,8 @@
 #   Normal start:     .\start-all.ps1
 #   Full clean start: .\start-all.ps1 -Clean
 #   Skip git pull:    .\start-all.ps1 -SkipGit
-#   Dev mode:         .\start-all.ps1 -Env development
+#   Dev mode (HMR):   .\start-all.ps1 -Env development
+#   Prod mode:        .\start-all.ps1 -Env production
 # ============================================================
 param(
   [switch]$Clean,
@@ -34,8 +35,6 @@ function Invoke-Git {
   return $result
 }
 
-# FIX: pm2 delete all prints [WARN] No process found to stderr when there are
-# no running processes, which PowerShell treats as NativeCommandError.
 function Invoke-PM2DeleteAll {
   try {
     $out = & pm2 delete all 2>&1
@@ -74,6 +73,7 @@ function Wait-Docker {
 # ============================================================
 Write-Step "0" "Checking system dependencies..."
 Write-Host "  Working directory: $ROOT" -ForegroundColor Gray
+Write-Host "  Mode: $Env" -ForegroundColor Gray
 
 foreach ($cmd in @("docker", "node")) {
   if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
@@ -81,7 +81,6 @@ foreach ($cmd in @("docker", "node")) {
   }
 }
 
-# Node.js version check -- require >= 22
 $nodeVer = (& node --version 2>$null) -replace 'v',''
 $nodeMajor = [int]($nodeVer -split '\.')[0]
 if ($nodeMajor -lt 22) {
@@ -89,7 +88,6 @@ if ($nodeMajor -lt 22) {
 }
 Write-OK "Node.js v$nodeVer"
 
-# pnpm check + version
 if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
   Write-Warn "pnpm not found, installing via npm..."
   npm install -g pnpm@10.33.0
@@ -98,7 +96,6 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
 $pnpmVer = (& pnpm --version 2>$null)
 Write-OK "pnpm v$pnpmVer"
 
-# pm2 check
 if (-not (Get-Command pm2 -ErrorAction SilentlyContinue)) {
   Write-Warn "pm2 not found, installing globally..."
   npm install -g pm2
@@ -117,7 +114,6 @@ if (-not (Test-Path (Join-Path $ROOT ".env"))) {
   exit 1
 }
 
-# Validate JWT_SECRET
 $jwtLine = Select-String -Path (Join-Path $ROOT ".env") -Pattern "^JWT_SECRET=(.+)" | Select-Object -First 1
 if (-not $jwtLine -or $jwtLine.Matches[0].Groups[1].Value.Trim() -eq "REPLACE_THIS_WITH_OPENSSL_RAND_HEX_32") {
   Write-Fail "JWT_SECRET in .env is not set or still placeholder. Generate: openssl rand -hex 32"
@@ -257,15 +253,33 @@ Write-OK "Dependencies installed"
 
 # ============================================================
 # STEP 8 -- Build
+# In dev mode: skip nuxt frontend build (nuxt dev handles it).
+# In prod mode: full build including frontend.
 # ============================================================
 Write-Step "8" "Building project..."
 $env:NODE_ENV = if ($Env -eq "development") { "development" } else { "production" }
-& pnpm run build
-if ($LASTEXITCODE -ne 0) { Write-Fail "pnpm build failed -- check TypeScript errors above" }
+
+if ($Env -eq "development") {
+  # Build only backend services (cores + apps except frontend)
+  # Frontend is served via nuxt dev with HMR -- no pre-build needed
+  Write-Warn "Dev mode: skipping nuxt frontend build (will start with HMR via nuxt dev)"
+  Write-Host "  Building backend services only..." -ForegroundColor Gray
+  & pnpm run build:backend
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warn "build:backend not found, running full build (frontend build will be unused in dev)"
+    & pnpm run build
+    if ($LASTEXITCODE -ne 0) { Write-Fail "pnpm build failed -- check TypeScript errors above" }
+  }
+} else {
+  & pnpm run build
+  if ($LASTEXITCODE -ne 0) { Write-Fail "pnpm build failed -- check TypeScript errors above" }
+}
 Write-OK "Build complete (NODE_ENV=$($env:NODE_ENV))"
 
 # ============================================================
 # STEP 9 -- Start PM2
+# Dev mode:  start all EXCEPT 'frontend' (prod), start 'frontend-dev' (HMR)
+# Prod mode: start all EXCEPT 'frontend-dev', start 'frontend' (built bundle)
 # ============================================================
 Write-Step "9" "Starting all services via PM2..."
 
@@ -280,12 +294,31 @@ Get-Content (Join-Path $ROOT ".env") | ForEach-Object {
 }
 
 $ecosystemPath = Join-Path $ROOT "infra/pm2/ecosystem.config.cjs"
+
 if ($Env -eq "development") {
+  Write-Host "  Dev mode: starting backend with --env development + frontend-dev (Vite HMR)" -ForegroundColor Gray
+
+  # Start everything with --env development (sets NODE_ENV=development for all cores)
   & pm2 start $ecosystemPath --env development
+  if ($LASTEXITCODE -ne 0) { Write-Fail "PM2 start failed" }
+
+  # Stop the production frontend process -- port 3001 must belong to frontend-dev only
+  Write-Host "  Stopping prod frontend (port conflict prevention)..." -ForegroundColor Gray
+  & pm2 stop frontend 2>$null | Out-Null
+  & pm2 delete frontend 2>$null | Out-Null
+  Write-OK "frontend (prod) removed -- frontend-dev (HMR) owns port 3001"
+
 } else {
+  Write-Host "  Prod mode: starting all services" -ForegroundColor Gray
   & pm2 start $ecosystemPath
+  if ($LASTEXITCODE -ne 0) { Write-Fail "PM2 start failed" }
+
+  # Stop dev frontend -- not needed in production
+  & pm2 stop frontend-dev 2>$null | Out-Null
+  & pm2 delete frontend-dev 2>$null | Out-Null
+  Write-OK "frontend-dev removed -- frontend (prod bundle) owns port 3001"
 }
-if ($LASTEXITCODE -ne 0) { Write-Fail "PM2 start failed -- check infra/pm2/ecosystem.config.cjs" }
+
 & pm2 save
 Start-Sleep 6
 & pm2 status
@@ -297,6 +330,9 @@ Write-Host "`n================================================" -ForegroundColor
 Write-Host "  crypto-platform is RUNNING!" -ForegroundColor Green
 Write-Host "================================================" -ForegroundColor Green
 Write-Host "  Frontend      http://localhost:3001" -ForegroundColor White
+if ($Env -eq "development") {
+  Write-Host "  HMR active    (Vite dev server, changes auto-reload)" -ForegroundColor Yellow
+}
 Write-Host "  Orchestrator  http://localhost:3010" -ForegroundColor White
 Write-Host "  WS Gateway    ws://localhost:4000" -ForegroundColor White
 Write-Host "  Grafana       http://localhost:3100" -ForegroundColor White
