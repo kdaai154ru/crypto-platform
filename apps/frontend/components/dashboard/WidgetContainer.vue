@@ -25,31 +25,34 @@
       <span class="error-sub">Last data preserved below</span>
     </div>
 
-    <!-- header -->
+    <!-- FIX 4: removed per-widget <DashboardSymbolSelector> from header.
+         Global symbol selection lives exclusively in Toolbar.
+         Per-widget selectors caused:
+           - multiple dropdown instances competing for clicks
+           - pointerdown events on widget headers closing the global dropdown
+           - each widget re-subscribing to WS on every global symbol change
+           independently of the global selector -->
     <div class="widget-header">
       <span class="widget-title">{{ widgetTitle }}</span>
       <div style="display:flex;align-items:center;gap:6px">
-        <DashboardSymbolSelector v-if="isSymbolWidget" />
         <span :class="['status-dot', statusDotStatus]" :title="moduleError ?? 'online'" />
       </div>
     </div>
 
-    <!-- FIX: widget-body теперь position:relative + overflow:visible.
-         widget-body-inner скрывает контент виджета (overflow:hidden).
-         resize-handle вынесен ПОСЛЕ widget-body-inner — он НЕ внутри
-         overflow:hidden контейнера, поэтому не обрезается и всегда кликабелен. -->
     <div class="widget-body">
       <div class="widget-body-inner">
+        <!-- FIX 5: always render the widget component.
+             Old logic: v-if="hasSettings" with v-else (no v-bind) meant
+             widgets without settings (or with empty settings object) never
+             received props AND were rendered via the v-else branch which
+             had no v-bind — so props like symbol/tf were never passed.
+             New logic: always render, spread settings only when present. -->
         <component
           :is="widgetComponent"
-          v-if="hasSettings"
           v-bind="widgetProps"
         />
-        <component :is="widgetComponent" v-else />
       </div>
 
-      <!-- resize handle: position:absolute от .widget-body (overflow:visible),
-           НЕ внутри .widget-body-inner (overflow:hidden) — это ключевой фикс. -->
       <div
         v-if="editMode"
         class="widget-resize-handle"
@@ -89,10 +92,6 @@ function lazy(imp: () => Promise<unknown>) {
   })
 }
 
-const SETTINGS_WIDGETS = new Set([
-  'chart', 'trades-tape', 'oi-chart', 'funding-chart',
-])
-
 const WIDGET_MAP: Record<string, ReturnType<typeof defineAsyncComponent>> = {
   'chart':           lazy(() => import('~/components/widgets/ChartWidget.vue')),
   'trades-tape':     lazy(() => import('~/components/widgets/TradesTapeWidget.vue')),
@@ -123,17 +122,9 @@ const TITLES: Record<string, string> = {
   'heatmap-rsi':     'RSI Heatmap',
 }
 
-const SYMBOL_WIDGETS = new Set(['chart', 'trades-tape', 'oi-chart', 'funding-chart', 'whale-feed'])
-
 const moduleError     = computed(() => sysStore.widgetHasError(props.item.type))
 const widgetComponent = computed(() => WIDGET_MAP[props.item.type] ?? WIDGET_MAP['market-overview'])
 const widgetTitle     = computed(() => TITLES[props.item.type] ?? props.item.type)
-const isSymbolWidget  = computed(() => SYMBOL_WIDGETS.has(props.item.type))
-const hasSettings     = computed(() =>
-  SETTINGS_WIDGETS.has(props.item.type) &&
-  props.item.settings &&
-  Object.keys(props.item.settings).length > 0
-)
 
 const statusDotStatus = computed(() => {
   if (!moduleError.value) return 'online'
@@ -141,6 +132,7 @@ const statusDotStatus = computed(() => {
   return 'offline'
 })
 
+// FIX 5: always pass props — empty object when no settings defined
 const widgetProps = computed(() => props.item.settings ?? {})
 </script>
 
@@ -152,7 +144,6 @@ const widgetProps = computed(() => props.item.settings ?? {})
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  /* overflow:visible — resize handle должен выступать за края */
   overflow: visible;
   position: relative;
 }
@@ -210,7 +201,6 @@ const widgetProps = computed(() => props.item.settings ?? {})
 .status-dot.degraded { background: var(--color-warning); }
 .status-dot.offline  { background: var(--color-error); }
 
-/* widget-body: flex-grow, overflow:visible чтобы resize handle не обрезался */
 .widget-body {
   flex: 1;
   overflow: visible;
@@ -220,14 +210,11 @@ const widgetProps = computed(() => props.item.settings ?? {})
   flex-direction: column;
 }
 
-/* widget-body-inner: скрывает содержимое виджета, НЕ содержит resize handle */
 .widget-body-inner {
   flex: 1;
   overflow: hidden;
   min-height: 0;
   position: relative;
-  /* FIX: убран border-radius — он создавал stacking context и обрезал
-     resize handle даже при overflow:visible на родителе */
 }
 
 .widget-empty {
@@ -239,9 +226,6 @@ const widgetProps = computed(() => props.item.settings ?? {})
   font-size: var(--text-sm);
 }
 
-/* FIX: resize handle вынесен за пределы widget-body-inner (overflow:hidden),
-   поэтому он всегда рендерится поверх и принимает mousedown корректно.
-   z-index:200 + pointer-events:all гарантируют кликабельность. */
 .widget-resize-handle {
   position: absolute;
   bottom: -2px;

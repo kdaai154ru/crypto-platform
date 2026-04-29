@@ -2,8 +2,13 @@
 <!-- Global selector: reads/writes symbolStore directly, no v-model prop -->
 <template>
   <div class="sym-selector" ref="rootEl">
-    <!-- Trigger -->
-    <button class="sym-trigger" @click="toggle">
+    <!-- Trigger: use pointerdown.stop so we own the event before
+         the document-level outside-click handler sees it -->
+    <button
+      class="sym-trigger"
+      @pointerdown.stop="handleTriggerPointer"
+      @click.stop
+    >
       <span class="sym-badge">{{ activeSymbol }}</span>
       <svg width="10" height="10" viewBox="0 0 12 12" fill="none"
            stroke="currentColor" stroke-width="1.5">
@@ -93,7 +98,17 @@ function calcPos() {
   }
 }
 
-function toggle() { isOpen.value ? close() : open() }
+// FIX 1: use pointerdown.stop on trigger — we call toggle() here and
+// stop propagation so the document pointerdown outside-handler never
+// sees this event. The old pattern (mousedown on document + click on
+// button) caused: mousedown→outside-handler runs first (noop since
+// closed) → click→toggle opens → but on SECOND click: dropdown is
+// open → mousedown→outside-handler CLOSES it → click→toggle sees
+// isOpen=false → calls open() again → flicker / no effect.
+function handleTriggerPointer(e: PointerEvent) {
+  e.stopPropagation()
+  isOpen.value ? close() : open()
+}
 
 function open() {
   calcPos()
@@ -133,12 +148,32 @@ function scrollCursor() {
 
 watch(filtered, () => { cursor.value = 0 })
 
-function onOutside(e: MouseEvent) {
-  if (!rootEl.value?.contains(e.target as Node)) close()
+// FIX 2: outside-click now uses pointerdown (consistent with trigger)
+// The dropdown is teleported to body — clicks inside it must NOT close.
+function onOutside(e: PointerEvent) {
+  // rootEl = trigger button area
+  if (rootEl.value?.contains(e.target as Node)) return
+  // Check if click is inside the teleported dropdown
+  const dropdown = document.querySelector('.sym-dropdown')
+  if (dropdown?.contains(e.target as Node)) return
+  close()
 }
 
-onMounted(()   => document.addEventListener('mousedown', onOutside))
-onUnmounted(() => document.removeEventListener('mousedown', onOutside))
+// FIX 3: recalculate position on scroll/resize so dropdown doesn't drift
+function onScrollOrResize() {
+  if (isOpen.value) calcPos()
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onOutside, true)
+  window.addEventListener('scroll', onScrollOrResize, { passive: true, capture: true })
+  window.addEventListener('resize', onScrollOrResize, { passive: true })
+})
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', onOutside, true)
+  window.removeEventListener('scroll', onScrollOrResize, true)
+  window.removeEventListener('resize', onScrollOrResize)
+})
 </script>
 
 <style>
