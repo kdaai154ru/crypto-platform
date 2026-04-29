@@ -12,17 +12,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onUnmounted } from 'vue'
 import type { NormalizedTicker } from '@crypto-platform/types'
 import { useWsClient } from '~/composables/useWsClient'
 
 const DEFAULT_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT']
 const tickers = ref<NormalizedTicker[]>([])
 
-// FIX: правильный канал 'ticker' (не 'ticker:BTC/USDT').
-// ws-gateway шлёт { type:'ticker', data:{ symbol, last, ... } }.
-// Подписываемся один раз на канал 'ticker' per-symbol через subscribe().
-const { subscribe, unsubscribe, onReady } = useWsClient()
+// FIX: use onEveryReady so subscriptions are re-mounted on every WS reconnect.
+// onReady is one-shot — after a reconnect the ticker widget showed stale/frozen data
+// because handlers were never re-registered.
+const { subscribe, unsubscribe, onEveryReady } = useWsClient()
 
 const handlers: Array<{ sym: string; cb: (d: unknown) => void }> = []
 
@@ -43,9 +43,8 @@ function mount() {
   }
 }
 
-onReady(mount)
+onEveryReady(mount)
 
-import { onUnmounted } from 'vue'
 onUnmounted(() => {
   for (const { sym, cb } of handlers) unsubscribe('ticker', sym, cb)
 })

@@ -10,20 +10,22 @@ import {
 } from '@crypto-platform/metrics';
 
 const CHANNEL_MAP: Record<string, string> = {
-  'agg:ticker': 'ticker',
-  'agg:candle': 'candle',
+  'agg:ticker':   'ticker',
+  'agg:candle':   'candle',
   'trades:stream': 'trades',
-  'trades:large': 'trades_large',
-  'trades:delta': 'trades_delta',
-  'deriv:oi': 'deriv_oi',
-  'deriv:fund': 'deriv_fund',
-  'deriv:liq': 'deriv_liq',
-  'whale:event': 'whale_event',
+  'trades:large':  'trades_large',
+  'trades:delta':  'trades_delta',
+  // FIX: was 'deriv:oi', 'deriv:fund', 'deriv:liq' — renamed to match derivatives-core output keys
+  'deriv:oi':    'deriv_oi',
+  'deriv:fund':  'deriv_fund',
+  'deriv:liq':   'deriv_liq',
+  // FIX: was 'whale:event' — key matches what trades-core now writes (xadd 'whale:event')
+  'whale:event':    'whale_event',
   'screener:update': 'screener_update',
-  'options:update': 'options_update',
-  'etf:latest': 'etf_latest',
-  'system:status': 'system_status',
-  'alerts:trigger': 'alerts_triggered',
+  'options:update':  'options_update',
+  'etf:latest':      'etf_latest',
+  'system:status':   'system_status',
+  'alerts:trigger':  'alerts_triggered',
 };
 
 // Channels that must be delivered to ALL connected clients regardless of subscription
@@ -58,7 +60,6 @@ export class ValkeyStreams {
   private logger: Logger;
   private reclaimTimer: ReturnType<typeof setInterval> | null = null;
   private isPolling = false;
-  // FIX #10: track whether a reconnect happened while pollLoop was in error-sleep
   private connectionLost = false;
 
   constructor(
@@ -244,8 +245,6 @@ export class ValkeyStreams {
 
       const isBroadcast = BROADCAST_WS_CHANNELS.has(wsChannel);
 
-      // For broadcast channels use all connected clients;
-      // for symbol-specific channels use only subscribed clients.
       const clients = isBroadcast
         ? this.connectionManager.all()
         : this.connectionManager.getByChannel(wsChannel);

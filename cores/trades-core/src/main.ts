@@ -21,11 +21,11 @@ const env = loadEnv(
 );
 const log = createLogger('trades-core');
 
+const STREAM_MAXLEN = 10_000;
+
 const VALKEY_OPTS = {
   host: env.VALKEY_HOST,
   port: env.VALKEY_PORT,
-  // FIX: pass password so iovalkey sends AUTH on connect.
-  // VALKEY_PASSWORD was missing from ValkeySchema — added in packages/config.
   ...(env.VALKEY_PASSWORD ? { password: env.VALKEY_PASSWORD } : {}),
   retryStrategy: (times: number) => Math.min(times * 100, 3_000),
   keepAlive: 10_000,
@@ -34,17 +34,21 @@ const VALKEY_OPTS = {
 
 const sub = new Valkey(VALKEY_OPTS);
 const pub = new Valkey(VALKEY_OPTS);
+// FIX: dedicated Valkey client for stream writes (xadd) to avoid mixing
+// pub/sub and command modes on the same connection.
+const str = new Valkey(VALKEY_OPTS);
 const hb  = new Valkey(VALKEY_OPTS);
 
 sub.on('error', (e: Error) => log.warn({ err: e.message }, 'sub connection error'));
 pub.on('error', (e: Error) => log.warn({ err: e.message }, 'pub connection error'));
+str.on('error', (e: Error) => log.warn({ err: e.message }, 'str connection error'));
 hb.on('error',  (e: Error) => log.warn({ err: e.message }, 'hb connection error'));
 
 // Resubscribe after Valkey reconnect.
 sub.on('ready', () => {
   log.info('Valkey sub ready, subscribing to norm:* channels');
-  sub.subscribe('norm:trades', 'norm:ticker', 'norm:candle', (err: Error | null | undefined) => {
-    if (err) log.error({ err }, 'Failed to subscribe to norm:* channels');
+  sub.subscribe('norm:trades', (err: Error | null | undefined) => {
+    if (err) log.error({ err }, 'Failed to subscribe to norm:trades');
   });
 });
 
@@ -57,10 +61,6 @@ const chWriter = new ClickHouseTradesWriter(
   env.CLICKHOUSE_PASSWORD,
 );
 
-/**
- * Runtime zod schema that mirrors NormalizedTrade exactly.
- * Must stay in sync with packages/types/src/normalized.ts.
- */
 const NormalizedTradeRuntimeSchema = z.object({
   symbol:    z.string(),
   exchange:  z.string(),
@@ -73,6 +73,8 @@ const NormalizedTradeRuntimeSchema = z.object({
   tradeId:   z.string().optional(),
   sizeLabel: z.enum(['S', 'M', 'L', 'XL']),
 });
+
+const WHALE_USD_THRESHOLD = 100_000;
 
 const processor = new TradeProcessor(
   log,
@@ -87,9 +89,12 @@ const processor = new TradeProcessor(
     }
   },
   (delta) => {
-    pub.publish('trades:delta', JSON.stringify(delta)).catch((e: Error) =>
-      log.warn({ err: e.message }, 'Failed to publish delta')
+    const json = JSON.stringify(delta);
+    pub.publish('trades:delta', json).catch((e: Error) =>
+      log.warn({ err: e.message }, 'Failed to publish trades:delta')
     );
+    str.xadd('trades:delta', 'MAXLEN', '~', String(STREAM_MAXLEN), '*', 'data', json)
+      .catch((e: Error) => log.warn({ err: e.message }, 'xadd trades:delta failed'));
   }
 );
 
@@ -110,6 +115,25 @@ sub.on('message', (channel: string, message: string) => {
     return;
   }
   const trade = result.data as unknown as NormalizedTrade;
+
+  // FIX: write to trades:stream Valkey stream so ws-gateway pollLoop
+  // can push trades to subscribed frontend clients (TradesTapeWidget).
+  // Previously trades-core only wrote to ClickHouse and published trades:delta,
+  // but never wrote to trades:stream — ws-gateway CHANNEL_MAP had the key but nothing wrote to it.
+  const tradeJson = message;
+  str.xadd('trades:stream', 'MAXLEN', '~', String(STREAM_MAXLEN), '*', 'data', tradeJson)
+    .catch((e: Error) => log.warn({ err: e.message }, 'xadd trades:stream failed'));
+
+  // FIX: write large trades (whales) to trades:large stream so WhaleFeedWidget gets data.
+  // whale_event in ws-gateway CHANNEL_MAP reads from 'whale:event' stream.
+  if (trade.isLarge || trade.usdValue >= WHALE_USD_THRESHOLD) {
+    str.xadd('whale:event', 'MAXLEN', '~', String(STREAM_MAXLEN), '*', 'data', tradeJson)
+      .catch((e: Error) => log.warn({ err: e.message }, 'xadd whale:event failed'));
+    // Also publish to trades:large pub/sub channel
+    str.xadd('trades:large', 'MAXLEN', '~', String(STREAM_MAXLEN), '*', 'data', tradeJson)
+      .catch((e: Error) => log.warn({ err: e.message }, 'xadd trades:large failed'));
+  }
+
   try {
     processor.process(trade);
     const lag = Date.now() - trade.ts;
@@ -140,7 +164,7 @@ async function shutdown(): Promise<void> {
   if (hbTimer) clearInterval(hbTimer);
   await processor.flush();
   processor.destroy();
-  await Promise.allSettled([sub.quit(), pub.quit(), hb.quit()]);
+  await Promise.allSettled([sub.quit(), pub.quit(), str.quit(), hb.quit()]);
   if (metricsServer) await metricsServer.close();
   process.exit(0);
 }
