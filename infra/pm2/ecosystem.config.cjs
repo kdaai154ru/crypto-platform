@@ -8,8 +8,6 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 
-// FIX #31: лимиты памяти скорректированы под реальное потребление сервисов
-// Сервисы с буферами (aggregator, trades, screener) получили увеличенные лимиты
 const base = {
   cwd:                       ROOT,
   instances:                 1,
@@ -33,22 +31,23 @@ module.exports = {
       ...base,
       name:   "orchestrator",
       script: path.join(ROOT, "apps/orchestrator/dist/main.js"),
-      // Orchestrator: лёгкий HTTP сервер + мониторинг, 512M достаточно
     },
     {
       ...base,
       name:               "ws-gateway",
       script:             path.join(ROOT, "apps/ws-gateway/dist/main.js"),
-      // ws-gateway: uWebSockets держит соединения в памяти
-      // при 10k клиентах ~200-300MB, 768M с запасом
       max_memory_restart: "768M",
     },
 
     // ─── FRONTEND ────────────────────────────────────────────
+    // PRODUCTION: runs pre-built .output bundle
+    // DEVELOPMENT: runs `nuxt dev` with Vite HMR — no rebuild needed on file changes
     {
       ...base,
       name:               "frontend",
+      // production script (default)
       script:             path.join(ROOT, "apps/frontend/.output/server/index.mjs"),
+      cwd:                path.join(ROOT, "apps/frontend"),
       max_memory_restart: "1G",
       env: {
         NODE_ENV:              "production",
@@ -56,7 +55,39 @@ module.exports = {
         NUXT_PUBLIC_API_URL:   process.env.NUXT_PUBLIC_API_URL || "http://localhost:3010",
         PORT:                  process.env.FRONTEND_PORT        || "3001",
       },
+      // development: override script to use nuxt dev (Vite HMR)
       env_development: {
+        NODE_ENV:              "development",
+        NUXT_PUBLIC_WS_URL:    process.env.NUXT_PUBLIC_WS_URL  || "ws://localhost:4000",
+        NUXT_PUBLIC_API_URL:   process.env.NUXT_PUBLIC_API_URL || "http://localhost:3010",
+        PORT:                  process.env.FRONTEND_PORT        || "3001",
+        // PM2 picks up PM2_SCRIPT/PM2_ARGS when NODE_ENV=development
+        // We rely on start-all.ps1 passing --env development
+        // The actual script swap is handled below via the dev override block
+      },
+    },
+
+    // DEV-ONLY frontend entry — used when start-all.ps1 passes --env development
+    // PM2 matches by name; start-all should start "frontend-dev" in dev mode
+    // and skip "frontend" (production build).
+    // Alternatively: use a single entry with conditional script (see start-all.ps1).
+    {
+      name:               "frontend-dev",
+      script:             "pnpm",
+      args:               "dev --port 3001",
+      cwd:                path.join(ROOT, "apps/frontend"),
+      instances:          1,
+      exec_mode:          "fork",
+      autorestart:        true,
+      exp_backoff_restart_delay: 500,
+      max_restarts:       5,
+      max_memory_restart: "1G",
+      watch:              false,
+      kill_timeout:       5000,
+      error_file: path.join(ROOT, "logs", "pm2-error.log"),
+      out_file:   path.join(ROOT, "logs", "pm2-out.log"),
+      merge_logs: true,
+      env: {
         NODE_ENV:              "development",
         NUXT_PUBLIC_WS_URL:    process.env.NUXT_PUBLIC_WS_URL  || "ws://localhost:4000",
         NUXT_PUBLIC_API_URL:   process.env.NUXT_PUBLIC_API_URL || "http://localhost:3010",
@@ -69,8 +100,6 @@ module.exports = {
       ...base,
       name:               "exchange-core",
       script:             path.join(ROOT, "cores/exchange-core/dist/main.js"),
-      // exchange-core: CCXT держит WS соединения + буферы по каждому символу
-      // 8G — агрессивно, но CCXT при 100+ символах реально съедает много
       max_restarts:       20,
       max_memory_restart: "8G",
       listen_timeout:     15000,
@@ -85,45 +114,36 @@ module.exports = {
     },
     {
       ...base,
-      name:               "normalizer-core",
-      script:             path.join(ROOT, "cores/normalizer-core/dist/main.js"),
-      // Stateless transformer — 512M достаточно
+      name:   "normalizer-core",
+      script: path.join(ROOT, "cores/normalizer-core/dist/main.js"),
     },
     {
       ...base,
-      name:               "subscription-core",
-      script:             path.join(ROOT, "cores/subscription-core/dist/main.js"),
-      // Subscription manager: Map символов + таймеры, 512M достаточно
+      name:   "subscription-core",
+      script: path.join(ROOT, "cores/subscription-core/dist/main.js"),
     },
     {
       ...base,
       name:               "aggregator-core",
       script:             path.join(ROOT, "cores/aggregator-core/dist/main.js"),
-      // aggregator-core: держит CandleState Map для всех символов × таймфреймов
-      // при 500 символах × 13 tf = 6500 записей — нужно 1G
       max_memory_restart: "1G",
     },
     {
       ...base,
       name:               "trades-core",
       script:             path.join(ROOT, "cores/trades-core/dist/main.js"),
-      // trades-core: TradeProcessor буфер до 50k трейдов + ClickHouse клиент
-      // при пиковой нагрузке буфер может занять ~200-300MB
       max_memory_restart: "1G",
     },
     {
       ...base,
       name:               "indicator-core",
       script:             path.join(ROOT, "cores/indicator-core/dist/main.js"),
-      // indicator-core: вычисления RSI/MACD/etc — нужны скользящие окна
       max_memory_restart: "768M",
     },
     {
       ...base,
       name:               "screener-core",
       script:             path.join(ROOT, "cores/screener-core/dist/main.js"),
-      // screener-core: хранит свечи для RSI по всем символам × tf (warm-up)
-      // при 1000 символах × 6 tf × 200 свечей = 1.2M объектов — нужно 2G
       max_memory_restart: "2G",
       env: {
         NODE_ENV:     "production",
@@ -136,9 +156,8 @@ module.exports = {
     },
     {
       ...base,
-      name:               "alert-core",
-      script:             path.join(ROOT, "cores/alert-core/dist/main.js"),
-      // alert-core: prevValues Map + правила — 512M достаточно
+      name:   "alert-core",
+      script: path.join(ROOT, "cores/alert-core/dist/main.js"),
     },
     {
       ...base,
