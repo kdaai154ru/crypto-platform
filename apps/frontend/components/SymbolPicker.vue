@@ -1,220 +1,159 @@
 <!-- apps/frontend/components/SymbolPicker.vue -->
-<!-- Универсальный пикер символов с поиском + категориями -->
-<!-- Использование:
-  <SymbolPicker v-model="mySymbols" :max="10" />
-  emits: update:modelValue(string[])  — массив выбранных символов (без /USDT)
-  prop max: максимальное кол-во выбранных (по умолчанию неограничено)
--->
+<!-- Универсальный пикер символов с поиском, топ-N и категориями -->
 <template>
   <div class="sp-root">
-    <!-- Поиск -->
-    <div class="sp-search-row">
+    <!-- Поиск + топ-N -->
+    <div class="sp-top">
       <input
         v-model="searchQuery"
-        class="sp-input"
-        placeholder="Search: BTC, ETH, DOGE…"
-        type="search"
-        autocomplete="off"
-        spellcheck="false"
+        class="sp-search"
+        placeholder="Search symbol…"
+        @input="onSearch"
+        @keydown.enter.prevent="onEnterPick"
       />
-      <span class="sp-count" v-if="modelValue.length">
-        {{ modelValue.length }}{{ max ? '/'+max : '' }} selected
-      </span>
+      <select v-if="showTopN" v-model="topNLocal" class="sp-topn" @change="onTopNChange">
+        <option value="0">Custom</option>
+        <option v-for="n in TOP_N_OPTIONS" :key="n" :value="n">Top {{ n }}</option>
+      </select>
     </div>
-
     <!-- Категории -->
     <div class="sp-cats">
       <button
-        v-for="cat in categories"
-        :key="cat"
-        class="sp-cat-btn"
-        :class="{ active: activeCategory === cat }"
-        @click="activeCategory = cat"
-      >
-        {{ cat }}
-      </button>
+        v-for="cat in categories" :key="cat"
+        :class="['sp-cat', activeCategory===cat ? 'active' : '']"
+        @click="activeCategory = cat as Category"
+      >{{ cat }}</button>
     </div>
-
-    <!-- Список символов -->
+    <!-- Список -->
     <div class="sp-list">
-      <div v-if="!allSymbols.length" class="sp-empty">Loading…</div>
-      <button
-        v-for="sym in displayList"
-        :key="sym"
-        class="sp-sym-btn"
-        :class="{ selected: isSelected(sym) }"
-        @click="toggle(sym)"
+      <div
+        v-for="sym in visibleList" :key="sym"
+        :class="['sp-item', isSelected(sym) ? 'selected' : '']"
+        @click="toggleSym(sym)"
       >
-        {{ sym.replace('USDT', '') }}
-      </button>
+        <span class="sp-name">{{ sym.replace('USDT', '') }}</span>
+        <span v-if="isSelected(sym)" class="sp-check">✓</span>
+      </div>
+      <div v-if="visibleList.length === 0" class="sp-empty">No results</div>
     </div>
-
-    <!-- Текущий выбор -->
-    <div v-if="modelValue.length" class="sp-selected-row">
+    <!-- Выбранные тэги -->
+    <div v-if="modelValue.length" class="sp-selected">
       <span
-        v-for="sym in modelValue"
-        :key="sym"
+        v-for="sym in modelValue" :key="sym"
         class="sp-tag"
-        @click="toggle(sym)"
-      >
-        {{ sym.replace('USDT', '') }} ✕
-      </span>
+        @click="toggleSym(sym)"
+      >{{ sym.replace('USDT','') }} ✕</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
-import { useSymbolSearch, loadSymbols } from '~/composables/useSymbolSearch'
+import { ref, computed, watch, onMounted } from 'vue'
+import { useSymbolSearch, loadSymbols, getTopN, type Category } from '~/composables/useSymbolSearch'
 
 const props = defineProps<{
-  modelValue: string[]  // массив символов как 'BTCUSDT'
+  modelValue: string[]
   max?: number
+  showTopN?: boolean
 }>()
-const emit = defineEmits<{ 'update:modelValue': [val: string[]] }>()
+const emit = defineEmits<{ (e: 'update:modelValue', v: string[]): void }>()
 
-const {
-  allSymbols,
-  filtered,
-  searchQuery,
-  activeCategory,
-  categories,
-} = useSymbolSearch()
+const TOP_N_OPTIONS = [100,200,300,400,500,600,700,800,900,1000,1500,2000,3000,4000]
 
-// Показываем максимум 60 в пикере для производительности
-const displayList = computed(() => filtered.value.slice(0, 60))
+const { filtered, searchQuery, activeCategory, categories } = useSymbolSearch()
+const topNLocal = ref(0)
+const topNSymbols = ref<string[]>([])
+
+const visibleList = computed(() => {
+  if (topNLocal.value > 0 && topNSymbols.value.length > 0) return topNSymbols.value
+  return filtered.value.slice(0, 200)
+})
 
 function isSelected(sym: string) {
   return props.modelValue.includes(sym)
 }
-
-function toggle(sym: string) {
-  const current = [...props.modelValue]
-  const idx = current.indexOf(sym)
+function toggleSym(sym: string) {
+  const arr = [...props.modelValue]
+  const idx = arr.indexOf(sym)
   if (idx >= 0) {
-    current.splice(idx, 1)
+    arr.splice(idx, 1)
   } else {
-    if (props.max && current.length >= props.max) {
-      // Заменяем последний при превышении max
-      current.splice(current.length - 1, 1)
-    }
-    current.push(sym)
+    if (props.max && arr.length >= props.max) arr.shift()
+    arr.push(sym)
   }
-  emit('update:modelValue', current)
+  emit('update:modelValue', arr)
+}
+function onEnterPick() {
+  const q = searchQuery.value.trim().toUpperCase()
+  if (!q) return
+  const match = filtered.value.find(s => s === q + 'USDT' || s === q)
+  if (match) toggleSym(match)
+}
+async function onTopNChange() {
+  if (topNLocal.value === 0) { topNSymbols.value = []; return }
+  topNSymbols.value = await getTopN(topNLocal.value)
+  emit('update:modelValue', [...topNSymbols.value])
+}
+function onSearch() {
+  topNLocal.value = 0
+  topNSymbols.value = []
 }
 
 onMounted(() => loadSymbols())
 </script>
 
 <style scoped>
-.sp-root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2);
-}
-
-.sp-search-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.sp-input {
-  flex: 1;
-  font-size: 11px;
-  padding: 3px 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-text);
+.sp-root { display: flex; flex-direction: column; gap: 4px; padding: 6px; }
+.sp-top  { display: flex; gap: 4px; }
+.sp-search {
+  flex: 1; font-size: 11px; padding: 3px 6px;
+  border-radius: var(--radius-sm); border: 1px solid var(--color-border);
+  background: var(--color-surface); color: var(--color-text);
   outline: none;
 }
-.sp-input:focus {
-  border-color: var(--color-primary);
+.sp-search:focus { border-color: var(--color-primary); }
+.sp-topn {
+  font-size: 10px; padding: 2px 4px;
+  border-radius: var(--radius-sm); border: 1px solid var(--color-border);
+  background: var(--color-surface); color: var(--color-text-muted); cursor: pointer;
 }
-
-.sp-count {
-  font-size: 10px;
-  color: var(--color-text-faint);
-  white-space: nowrap;
-}
-
 .sp-cats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
+  display: flex; flex-wrap: wrap; gap: 3px;
 }
-
-.sp-cat-btn {
-  font-size: 9px;
-  padding: 1px 6px;
+.sp-cat {
+  font-size: 9px; padding: 1px 5px;
   border-radius: var(--radius-full);
   border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-text-muted);
-  cursor: pointer;
-  transition: all var(--transition-interactive);
+  background: var(--color-surface); color: var(--color-text-faint);
+  cursor: pointer; transition: all var(--transition-interactive);
 }
-.sp-cat-btn:hover  { border-color: var(--color-primary); color: var(--color-primary); }
-.sp-cat-btn.active {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-  color: var(--color-text-inverse);
-}
-
+.sp-cat:hover  { border-color: var(--color-primary); color: var(--color-text-muted); }
+.sp-cat.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
 .sp-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-  max-height: 120px;
-  overflow-y: auto;
-}
-
-.sp-empty {
-  font-size: 11px;
-  color: var(--color-text-faint);
-}
-
-.sp-sym-btn {
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border);
+  max-height: 160px; overflow-y: auto;
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm);
   background: var(--color-surface);
-  color: var(--color-text-muted);
-  cursor: pointer;
-  transition: all var(--transition-interactive);
 }
-.sp-sym-btn:hover   { border-color: var(--color-primary); color: var(--color-primary); }
-.sp-sym-btn.selected {
-  background: color-mix(in oklch, var(--color-primary) 15%, var(--color-surface));
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  font-weight: 600;
+.sp-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 3px 8px; font-size: 11px; color: var(--color-text-muted);
+  cursor: pointer; transition: background var(--transition-interactive);
 }
-
-.sp-selected-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-  padding-top: var(--space-1);
-  border-top: 1px solid var(--color-divider);
+.sp-item:hover    { background: var(--color-surface-offset); }
+.sp-item.selected { background: color-mix(in oklch, var(--color-primary) 12%, transparent); color: var(--color-primary); }
+.sp-name  { font-weight: 500; }
+.sp-check { font-size: 10px; color: var(--color-primary); }
+.sp-empty { padding: 8px; font-size: 10px; color: var(--color-text-faint); text-align: center; }
+.sp-selected {
+  display: flex; flex-wrap: wrap; gap: 3px;
+  padding-top: 4px; border-top: 1px solid var(--color-divider);
 }
-
 .sp-tag {
-  font-size: 10px;
-  padding: 1px 6px;
+  font-size: 9px; padding: 1px 5px;
   border-radius: var(--radius-full);
-  background: color-mix(in oklch, var(--color-primary) 12%, var(--color-surface));
-  color: var(--color-primary);
-  border: 1px solid color-mix(in oklch, var(--color-primary) 30%, transparent);
-  cursor: pointer;
-  transition: all var(--transition-interactive);
+  background: color-mix(in oklch, var(--color-primary) 15%, transparent);
+  color: var(--color-primary); cursor: pointer;
+  transition: background var(--transition-interactive);
 }
-.sp-tag:hover {
-  background: color-mix(in oklch, var(--color-error) 12%, var(--color-surface));
-  color: var(--color-error);
-  border-color: var(--color-error);
-}
+.sp-tag:hover { background: color-mix(in oklch, var(--color-error) 20%, transparent); color: var(--color-error); }
 </style>

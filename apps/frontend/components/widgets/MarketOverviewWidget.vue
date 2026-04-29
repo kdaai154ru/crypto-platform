@@ -21,7 +21,7 @@
 
     <!-- SymbolPicker (раскрывается) -->
     <div v-if="showPicker" class="mo-picker-wrap">
-      <SymbolPicker v-model="selectedSymbols" :max="20" />
+      <SymbolPicker v-model="selectedSymbols" :max="20" :show-top-n="true" />
       <button class="apply-btn" @click="applySymbols">Apply</button>
     </div>
 
@@ -57,7 +57,6 @@ import { useWsClient } from '~/composables/useWsClient'
 import { loadSymbols } from '~/composables/useSymbolSearch'
 import SymbolPicker from '~/components/SymbolPicker.vue'
 
-// Хранить выбранные символы в памяти (USDT-формат: 'BTCUSDT')
 const DEFAULT_SYMS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT']
 const selectedSymbols = ref<string[]>([...DEFAULT_SYMS])
 const showPicker = ref(false)
@@ -75,7 +74,7 @@ const TF_BASE: Record<TF, string> = {
 }
 
 interface TickerRow {
-  symbol: string   // 'BTCUSDT'
+  symbol: string
   last: number
   change: number
   volume: number
@@ -86,7 +85,6 @@ const chgTf   = ref<TF>('1d')
 const tickers = ref<TickerRow[]>(DEFAULT_SYMS.map(s => ({ symbol: s, last: 0, change: 0, volume: 0 })))
 const loading = ref(false)
 
-// WS — live цена
 const { subscribe, unsubscribe, onEveryReady } = useWsClient()
 const handlers: { sym: string; cb: (d: unknown) => void }[] = []
 
@@ -94,7 +92,7 @@ function mountWs() {
   for (const { sym, cb } of handlers) unsubscribe('ticker', sym.replace('USDT', '/USDT'), cb)
   handlers.length = 0
   for (const sym of selectedSymbols.value) {
-    const wsSym = sym.replace('USDT', '/USDT')  // 'BTCUSDT' → 'BTC/USDT'
+    const wsSym = sym.replace('USDT', '/USDT')
     const cb = (d: unknown) => {
       const t = d as NormalizedTicker
       const idx = tickers.value.findIndex(x => x.symbol === sym)
@@ -133,7 +131,6 @@ async function calcMetrics(sym: string, vTf: TF, cTf: TF) {
 
 async function loadAll() {
   loading.value = true
-  // Синхронизируем массив tickers с selectedSymbols
   const syms = selectedSymbols.value
   tickers.value = syms.map(s => {
     const existing = tickers.value.find(t => t.symbol === s)
@@ -154,7 +151,6 @@ async function loadAll() {
 function applySymbols() {
   showPicker.value = false
   loadAll()
-  // Перезапускаем WS-подписки
   for (const { sym, cb } of handlers) unsubscribe('ticker', sym.replace('USDT', '/USDT'), cb)
   handlers.length = 0
   mountWs()
@@ -177,16 +173,16 @@ function fmtPrice(n: number): string {
 }
 function fmtVol(n: number): string {
   if (!n) return '—'
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
-  if (n >= 1e6) return (n / 1e6).toFixed(0) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K'
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B'
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
   return n.toFixed(0)
 }
 
 let restTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
-  loadSymbols()  // загружаем все USDT символы один раз
+  loadSymbols()
   loadAll()
   restTimer = setInterval(loadAll, 60_000)
 })
@@ -230,7 +226,7 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--color-divider);
   background: var(--color-surface);
   flex-shrink: 0;
-  max-height: 240px;
+  max-height: 300px;
   overflow-y: auto;
 }
 .apply-btn {

@@ -38,6 +38,15 @@ let chart: IChartApi | null = null
 let series: ISeriesApi<'Area'> | null = null
 let timer: ReturnType<typeof setInterval> | null = null
 
+/** Форматирование оси Y: авто K/M/B */
+function fmtOI(v: number): string {
+  if (!isFinite(v) || isNaN(v)) return '—'
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B'
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M'
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K'
+  return v.toFixed(0)
+}
+
 function normSymbol(sym: string): string {
   return sym.replace('/', '').replace('USDT', '') + 'USDT'
 }
@@ -53,11 +62,13 @@ async function loadBinance(sym: string): Promise<{ time: number; value: number }
       time:  Math.floor(d.timestamp / 1000),
       value: parseFloat(d.sumOpenInterestValue),
     }))
+    .filter(d => isFinite(d.value) && !isNaN(d.value) && d.value > 0)
     .sort((a, b) => a.time - b.time)
 }
 
 async function loadBybit(sym: string): Promise<{ time: number; value: number }[]> {
   const s = normSymbol(sym)
+  // Bybit v5: openInterestValue — в контрактах (USD), не нужно множить
   const url = `https://api.bybit.com/v5/market/open-interest?category=linear&symbol=${s}&intervalTime=5min&limit=200`
   const res = await fetch(url)
   if (!res.ok) throw new Error(`Bybit ${res.status}`)
@@ -68,6 +79,7 @@ async function loadBybit(sym: string): Promise<{ time: number; value: number }[]
       time:  Math.floor(Number(d.timestamp) / 1000),
       value: parseFloat(d.openInterestValue),
     }))
+    .filter(d => isFinite(d.value) && !isNaN(d.value) && d.value > 0)
     .sort((a, b) => a.time - b.time)
 }
 
@@ -81,7 +93,7 @@ async function loadOI() {
       ? await loadBybit(sym)
       : await loadBinance(sym)
 
-    if (!points.length) { error.value = 'No data'; return }
+    if (!points.length) { error.value = 'No data'; loading.value = false; return }
 
     const seen  = new Set<number>()
     const dedup = points.filter(p => { if (seen.has(p.time)) return false; seen.add(p.time); return true })
@@ -93,6 +105,15 @@ async function loadOI() {
         value: p.value,
       }))
     )
+
+    // Обновляем форматтер оси Y на основе реальных данных
+    const maxVal = Math.max(...dedup.map(p => p.value))
+    const prec = maxVal >= 1e9 ? 3 : maxVal >= 1e6 ? 2 : 1
+    chart?.applyOptions({
+      localization: {
+        priceFormatter: (v: number) => fmtOI(v),
+      },
+    })
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Fetch error'
   } finally {
@@ -106,6 +127,9 @@ onMounted(() => {
     layout: { background: { color: 'transparent' }, textColor: '#cdccca' },
     grid:   { vertLines: { color: '#262523' }, horzLines: { color: '#262523' } },
     autoSize: true,
+    localization: {
+      priceFormatter: (v: number) => fmtOI(v),
+    },
   })
   series = chart.addSeries(AreaSeries, {
     lineColor: '#4f98a3',
