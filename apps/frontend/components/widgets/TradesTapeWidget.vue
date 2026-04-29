@@ -9,6 +9,7 @@
         :key="t._key"
         :class="['tape-row', t.side === 'buy' ? 'buy' : 'sell']"
       >
+        <span class="t-side">{{ t.side === 'buy' ? 'B' : 'S' }}</span>
         <span class="t-price">{{ t.price.toFixed(2) }}</span>
         <span class="t-qty">{{ t.qty.toFixed(4) }}</span>
         <span class="t-time">{{ fmtTime(t.ts) }}</span>
@@ -29,27 +30,25 @@ const symbolStore = useSymbolStore()
 const { activeSymbol } = storeToRefs(symbolStore)
 const { subscribe, unsubscribe, onReady } = useWsClient()
 
-// Максимум строк в памяти — ограничиваем рост DOM
 const MAX     = 200
-const ROW_H   = 22   // px, высота одной строки
-const VISIBLE = 30   // сколько рендерим одновременно
+const ROW_H   = 22
+const VISIBLE = 30
 
 interface TradeRow extends NormalizedTrade { _key: string }
 
-const trades  = ref<TradeRow[]>([])
-const listEl  = ref<HTMLElement | null>(null)
+const trades    = ref<TradeRow[]>([])
+const listEl    = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
-let _counter  = 0
+let _counter    = 0
 
 let currentCb: ((d: unknown) => void) | null = null
 let currentSymbol = ''
 
-// Виртуализация: вычисляем slice из trades
 const startIdx = computed(() => {
   const idx = Math.floor(scrollTop.value / ROW_H)
   return Math.max(0, idx - 5)
 })
-const endIdx = computed(() => Math.min(trades.value.length, startIdx.value + VISIBLE + 10))
+const endIdx        = computed(() => Math.min(trades.value.length, startIdx.value + VISIBLE + 10))
 const visibleTrades = computed(() => trades.value.slice(startIdx.value, endIdx.value))
 const topSpacerH    = computed(() => startIdx.value * ROW_H)
 const botSpacerH    = computed(() => (trades.value.length - endIdx.value) * ROW_H)
@@ -90,7 +89,7 @@ function fmtTime(ts: number): string {
 .tape-list   { flex: 1; overflow-y: auto; }
 .tape-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 14px 1fr 1fr 1fr;
   padding: 2px var(--space-3);
   height: 22px;
   font-size: 11px;
@@ -98,8 +97,13 @@ function fmtTime(ts: number): string {
   border-bottom: 1px solid oklch(from var(--color-border) l c h / 0.3);
   box-sizing: border-box;
 }
-.tape-row.buy  { color: var(--color-success); }
-.tape-row.sell { color: var(--color-notification); }
+.tape-row.buy  { color: #22c55e; }
+.tape-row.sell { color: #ef4444; }
+.t-side { font-weight: 700; font-size: 10px; opacity: 0.8; }
 .t-price { font-weight: 600; }
 .t-qty, .t-time { color: var(--color-text-muted); text-align: right; }
+.tape-row.buy  .t-qty,
+.tape-row.buy  .t-time  { color: rgba(34,197,94,0.6); }
+.tape-row.sell .t-qty,
+.tape-row.sell .t-time  { color: rgba(239,68,68,0.6); }
 </style>
