@@ -35,6 +35,21 @@ function Invoke-Git {
   return $result
 }
 
+# FIX: pm2 delete all prints [WARN] No process found to stderr when there are
+# no running processes, which PowerShell treats as NativeCommandError.
+# Wrapping in try/catch with 2>$null suppresses the false-positive error.
+function Invoke-PM2DeleteAll {
+  try {
+    $out = & pm2 delete all 2>&1
+    # Only show output if it's a real error (not the expected "No process found" warn)
+    if ($out -and ($out -notmatch "No process found")) {
+      Write-Host ($out | Out-String).Trim() -ForegroundColor DarkGray
+    }
+  } catch {
+    # Intentionally ignored — "No process found" is not an error
+  }
+}
+
 function Wait-Docker {
   param($container, $label, $timeoutSec = 90)
   Write-Host "  Waiting $label" -NoNewline
@@ -116,7 +131,7 @@ Write-OK ".env valid"
 # STEP 1 — Stop old PM2 processes
 # ============================================================
 Write-Step "1" "Stopping old PM2 processes..."
-& pm2 delete all 2>$null | Out-Null
+Invoke-PM2DeleteAll
 Write-OK "PM2 cleared"
 
 # ============================================================
