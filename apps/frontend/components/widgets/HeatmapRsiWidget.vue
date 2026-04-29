@@ -10,6 +10,10 @@
           @click="setCategory(cat)"
         >{{ cat }}</button>
       </div>
+      <!-- TF селектор -->
+      <select v-model="activeTf" class="hm-tf" @change="loadAll">
+        <option v-for="tf in TF_OPTIONS" :key="tf" :value="tf">{{ tf }}</option>
+      </select>
       <!-- Кнопка выбора символов + Top-N -->
       <button class="sym-btn" @click="showPicker = !showPicker">⊞ ({{ customSymbols.length || 'auto' }})</button>
       <button class="refresh-btn" @click="loadAll" :disabled="loading">↻</button>
@@ -27,7 +31,7 @@
         v-for="cell in cells" :key="cell.symbol"
         class="hm-cell"
         :style="{ background: rsiBackground(cell.rsi) }"
-        :title="cell.symbol.replace('USDT','') + ': RSI=' + (cell.rsi?.toFixed(1) ?? '—')"
+        :title="cell.symbol.replace('USDT','') + ': RSI=' + (cell.rsi?.toFixed(1) ?? '—') + ' (' + activeTf + ')'"
       >
         <div class="hm-sym">{{ cell.symbol.replace('USDT','') }}</div>
         <div class="hm-val">{{ cell.rsi != null ? cell.rsi.toFixed(0) : '—' }}</div>
@@ -41,6 +45,9 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useSymbolSearch, loadSymbols, CATEGORIES } from '~/composables/useSymbolSearch'
 import SymbolPicker from '~/components/SymbolPicker.vue'
 
+const TF_OPTIONS = ['5m','15m','30m','1h','4h','1d'] as const
+type TF = typeof TF_OPTIONS[number]
+
 const DEFAULT_SYMBOLS = [
   'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT',
   'DOGEUSDT','ADAUSDT','AVAXUSDT','LINKUSDT','DOTUSDT',
@@ -49,11 +56,11 @@ const DEFAULT_SYMBOLS = [
 ]
 
 const filterCat     = ref('All')
-const customSymbols = ref<string[]>([])  // если заполнен — используем вместо авто
+const activeTf      = ref<TF>('1h')
+const customSymbols = ref<string[]>([])
 const showPicker    = ref(false)
 const { allSymbols } = useSymbolSearch()
 
-// Авто-список по категории (если customSymbols пуст)
 const autoSymbols = computed<string[]>(() => {
   if (filterCat.value === 'All') return DEFAULT_SYMBOLS
   const tags = CATEGORIES[filterCat.value] ?? []
@@ -74,7 +81,7 @@ const cells  = ref<{ symbol: string; rsi: number | null }[]>(
 const loading = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
 
-// Wilder RSI (14)
+// Wilder RSI
 function calcRsi(closes: number[], period = 14): number | null {
   if (closes.length < period + 1) return null
   let gains = 0, losses = 0
@@ -92,9 +99,9 @@ function calcRsi(closes: number[], period = 14): number | null {
   return 100 - 100 / (1 + ag / al)
 }
 
-async function fetchRsi1h(symbol: string): Promise<number | null> {
+async function fetchRsi(symbol: string, tf: TF): Promise<number | null> {
   try {
-    const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=100`)
+    const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=100`)
     if (!r.ok) return null
     const data: [number,string,string,string,string,...unknown[]][] = await r.json()
     const closes = data.map(k => parseFloat(k[4])).filter(v => isFinite(v))
@@ -105,9 +112,10 @@ async function fetchRsi1h(symbol: string): Promise<number | null> {
 async function loadAll() {
   loading.value = true
   const syms = activeSymbols.value
+  const tf   = activeTf.value
   cells.value = syms.map(s => ({ symbol: s, rsi: null }))
   await Promise.allSettled(syms.map(async (sym, idx) => {
-    const rsi = await fetchRsi1h(sym)
+    const rsi = await fetchRsi(sym, tf)
     if (cells.value[idx]) cells.value[idx].rsi = rsi
   }))
   loading.value = false
@@ -115,7 +123,7 @@ async function loadAll() {
 
 function setCategory(cat: string) {
   filterCat.value = cat
-  customSymbols.value = []  // сбрасываем ручной выбор при смене категории
+  customSymbols.value = []
   loadAll()
 }
 
@@ -129,7 +137,10 @@ function rsiBackground(v: number | null) {
   if (v >= 70)   return 'rgba(248,113,113,0.75)'
   if (v <= 30)   return 'rgba(74,222,128,0.65)'
   const norm = (v - 30) / 40
-  return `rgba(${Math.round(norm*248)}, ${Math.round((1-norm)*200+50)}, 100, 0.5)`
+  const r = Math.round(74  + (248 - 74)  * norm)
+  const g = Math.round(222 + (113 - 222) * norm)
+  const b = Math.round(128 + (113 - 128) * norm)
+  return `rgba(${r},${g},${b},0.5)`
 }
 
 onMounted(() => {
@@ -142,34 +153,32 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 
 <style scoped>
 .hm-header {
-  display: flex; align-items: center; gap: var(--space-2);
-  padding: 4px var(--space-2); border-bottom: 1px solid var(--color-divider);
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 4px 6px; border-bottom: 1px solid var(--color-divider);
   flex-shrink: 0;
 }
-.hm-cats { display: flex; flex-wrap: wrap; gap: 3px; flex: 1; }
+.hm-cats { display: flex; gap: 3px; flex-wrap: wrap; }
 .hm-cat {
   font-size: 9px; padding: 1px 5px;
-  border-radius: var(--radius-full); border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
   background: var(--color-surface); color: var(--color-text-faint);
   cursor: pointer; transition: all var(--transition-interactive);
 }
 .hm-cat:hover  { border-color: var(--color-primary); color: var(--color-text-muted); }
-.hm-cat.active { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-text-inverse); }
+.hm-cat.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+.hm-tf {
+  font-size: 10px; padding: 1px 4px;
+  border-radius: var(--radius-sm); border: 1px solid var(--color-border);
+  background: var(--color-surface); color: var(--color-text-muted); cursor: pointer;
+}
 .sym-btn {
-  font-size: 9px; padding: 2px 6px;
+  font-size: 10px; padding: 2px 6px;
   border-radius: var(--radius-sm); border: 1px solid var(--color-border);
   background: var(--color-surface); color: var(--color-text-muted); cursor: pointer;
   transition: all var(--transition-interactive);
 }
 .sym-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
-.refresh-btn {
-  font-size: 11px; padding: 2px 5px;
-  border-radius: var(--radius-sm); border: 1px solid var(--color-border);
-  background: var(--color-surface); color: var(--color-text-muted); cursor: pointer;
-  transition: all var(--transition-interactive);
-}
-.refresh-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
-.refresh-btn:disabled { opacity: 0.4; cursor: default; }
 .hm-picker {
   border-bottom: 1px solid var(--color-divider);
   background: var(--color-surface);
@@ -182,19 +191,25 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
   transition: background var(--transition-interactive);
 }
 .apply-btn:hover { background: var(--color-primary-hover); }
-.hm-loading { font-size: 11px; color: var(--color-text-faint); padding: 8px; }
+.refresh-btn {
+  margin-left: auto; font-size: 10px; padding: 2px 8px;
+  border-radius: var(--radius-sm); border: 1px solid var(--color-border);
+  background: var(--color-surface); color: var(--color-text-muted); cursor: pointer;
+}
+.refresh-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.refresh-btn:disabled { opacity: 0.4; cursor: default; }
+.hm-loading { padding: 8px; text-align: center; font-size: 10px; color: var(--color-text-faint); }
 .hm-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
-  gap: 3px; padding: var(--space-2);
-  overflow-y: auto; flex: 1;
+  display: flex; flex-wrap: wrap; gap: 3px;
+  padding: 6px; overflow-y: auto; flex: 1;
+  align-content: flex-start;
 }
 .hm-cell {
-  border-radius: 4px; padding: 5px 4px;
-  text-align: center; cursor: default;
-  transition: transform var(--transition-interactive);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  width: 56px; height: 44px; border-radius: var(--radius-sm);
+  cursor: default; transition: opacity 0.2s;
 }
-.hm-cell:hover { transform: scale(1.05); }
-.hm-sym { font-size: 9px; color: rgba(255,255,255,0.7); margin-bottom: 1px; }
-.hm-val { font-size: 12px; font-weight: 600; color: #fff; font-variant-numeric: tabular-nums; }
+.hm-cell:hover { opacity: 0.85; }
+.hm-sym { font-size: 9px; font-weight: 600; color: rgba(255,255,255,0.9); line-height: 1; }
+.hm-val { font-size: 12px; font-weight: 700; color: #fff; line-height: 1.2; font-variant-numeric: tabular-nums; }
 </style>

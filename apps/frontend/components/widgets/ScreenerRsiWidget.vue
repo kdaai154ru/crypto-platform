@@ -4,7 +4,6 @@
     <!-- Toolbar -->
     <div class="sr-toolbar">
       <span class="sr-title">RSI Screener</span>
-      <!-- Поиск + Top-N через SymbolPicker -->
       <button class="sym-btn" @click="showPicker = !showPicker">⊞ Symbols ({{ activeSymbols.length }})</button>
       <label class="macd-toggle">
         <input type="checkbox" v-model="showMacd" />
@@ -84,16 +83,16 @@ type TF = typeof tfs[number]
 type RowData = { symbol: string } & Partial<Record<TF, number>> & Partial<Record<string, number>>
 
 const activeSymbols = ref<string[]>([...DEFAULT_SYMS])
-const showPicker  = ref(false)
-const rows        = ref<Map<string, Partial<Record<string, number>>>>(new Map())
-const loading     = ref(false)
-const error       = ref('')
-const sortKey     = ref<string>('symbol')
-const sortDir     = ref<'asc'|'desc'>('asc')
-const showMacd    = ref(false)
+const showPicker    = ref(false)
+const showMacd      = ref(false)
+const rows          = ref<Map<string, Record<string, number>>>(new Map())
+const loading       = ref(false)
+const error         = ref('')
+const sortKey       = ref('symbol')
+const sortDir       = ref<'asc'|'desc'>('asc')
 let timer: ReturnType<typeof setInterval> | null = null
 
-// Wilder RSI
+// ─── RSI (Wilder) ───────────────────────────────────────────────────────────
 function calcRsi(closes: number[], period = 14): number | null {
   if (closes.length < period + 1) return null
   let gains = 0, losses = 0
@@ -110,46 +109,55 @@ function calcRsi(closes: number[], period = 14): number | null {
     avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period
   }
   if (avgLoss === 0) return 100
-  const rs = avgGain / avgLoss
-  return 100 - (100 / (1 + rs))
+  return 100 - (100 / (1 + avgGain / avgLoss))
 }
 
-// EMA
+// ─── EMA ────────────────────────────────────────────────────────────────────
 function calcEma(values: number[], period: number): number[] {
-  if (values.length === 0) return []
+  if (values.length < period) return []
   const k = 2 / (period + 1)
-  const ema: number[] = [values[0]]
-  for (let i = 1; i < values.length; i++) {
-    ema.push(values[i] * k + ema[i - 1] * (1 - k))
+  // Первое значение EMA = SMA первых `period` значений
+  let ema = values.slice(0, period).reduce((s, v) => s + v, 0) / period
+  const result: number[] = [ema]
+  for (let i = period; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k)
+    result.push(ema)
   }
-  return ema
+  return result
 }
 
-// MACD histogram — правильный расчёт с достаточным количеством данных
+// ─── MACD histogram ─────────────────────────────────────────────────────────
+// Правильный расчёт: EMA инициализируется через SMA, выравнивание по хвосту
 function calcMacdHist(closes: number[], fast = 12, slow = 26, signal = 9): number | null {
-  const need = slow + signal + 10  // достаточный запас данных
-  if (closes.length < need) return null
-  const emaFast = calcEma(closes, fast)
-  const emaSlow = calcEma(closes, slow)
-  // Выравниваем длины (emaSlow короче на slow-fast шагов накопления)
+  // Нужно минимум slow + signal свечей для корректного расчёта
+  if (closes.length < slow + signal) return null
+
+  const emaFast = calcEma(closes, fast)   // длина: closes.length - fast + 1
+  const emaSlow = calcEma(closes, slow)   // длина: closes.length - slow + 1
+
+  // emaSlow короче — берём хвосты одинаковой длины
   const len = Math.min(emaFast.length, emaSlow.length)
+  if (len < signal) return null
+
   const macdLine: number[] = []
   for (let i = 0; i < len; i++) {
-    const f = emaFast[emaFast.length - len + i]
-    const s = emaSlow[emaSlow.length - len + i]
-    macdLine.push(f - s)
+    macdLine.push(
+      emaFast[emaFast.length - len + i] - emaSlow[emaSlow.length - len + i]
+    )
   }
-  if (macdLine.length < signal + 1) return null
+
   const signalLine = calcEma(macdLine, signal)
-  const last = macdLine.length - 1
-  const hist = macdLine[last] - signalLine[last]
+  if (!signalLine.length) return null
+
+  const hist = macdLine[macdLine.length - 1] - signalLine[signalLine.length - 1]
   return isFinite(hist) ? hist : null
 }
 
+// ─── Fetch ──────────────────────────────────────────────────────────────────
 async function fetchRsiMacd(symbol: string, tf: TF): Promise<{ rsi: number | null; macd: number | null }> {
   try {
-    // Берём 200 свечей — достаточно для MACD(12,26,9) + RSI(14)
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=200`
+    // 300 свечей: достаточно для SMA-инициализированной EMA(26) + signal(9) + буфер
+    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=300`
     const res  = await fetch(url)
     if (!res.ok) return { rsi: null, macd: null }
     const data: [number,string,string,string,string,...unknown[]][] = await res.json()
@@ -171,12 +179,11 @@ async function loadAll() {
         const { rsi, macd } = await fetchRsiMacd(sym, tf)
         if (!rows.value.has(sym)) rows.value.set(sym, {})
         const r = rows.value.get(sym)!
-        if (rsi  !== null) r[tf]            = rsi
-        if (macd !== null) r['macd_' + tf]  = macd
+        if (rsi  !== null) r[tf]           = rsi
+        if (macd !== null) r['macd_' + tf] = macd
       })
     )
     await Promise.allSettled(tasks)
-    // Удаляем строки которых больше нет в activeSymbols
     for (const key of rows.value.keys()) {
       if (!syms.includes(key)) rows.value.delete(key)
     }
@@ -222,7 +229,11 @@ const rsiColor = (v: number) =>
 
 function fmtMacd(v: number | null | undefined): string {
   if (v == null || !isFinite(v)) return '—'
-  return v.toFixed(4)
+  // Авто-форматирование: убираем лишние нули
+  if (Math.abs(v) >= 100) return v.toFixed(2)
+  if (Math.abs(v) >= 1)   return v.toFixed(4)
+  if (Math.abs(v) >= 0.01) return v.toFixed(6)
+  return v.toExponential(2)
 }
 
 onMounted(() => {

@@ -38,7 +38,7 @@ let chart: IChartApi | null = null
 let series: ISeriesApi<'Area'> | null = null
 let timer: ReturnType<typeof setInterval> | null = null
 
-/** Форматирование оси Y: авто K/M/B */
+/** Авто-форматирование K/M/B для оси Y и тултипов */
 function fmtOI(v: number): string {
   if (!isFinite(v) || isNaN(v)) return '—'
   if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B'
@@ -55,31 +55,35 @@ async function loadBinance(sym: string): Promise<{ time: number; value: number }
   const s = normSymbol(sym)
   const url = `https://fapi.binance.com/futures/data/openInterestHist?symbol=${s}&period=5m&limit=200`
   const res = await fetch(url)
-  if (!res.ok) throw new Error(`Binance ${res.status}`)
+  if (!res.ok) throw new Error(`Binance OI ${res.status}`)
   const data: { timestamp: number; sumOpenInterestValue: string }[] = await res.json()
   return data
     .map(d => ({
-      time:  Math.floor(d.timestamp / 1000),
+      time:  Math.floor(Number(d.timestamp) / 1000),
       value: parseFloat(d.sumOpenInterestValue),
     }))
-    .filter(d => isFinite(d.value) && !isNaN(d.value) && d.value > 0)
+    .filter(d => isFinite(d.value) && d.value > 0 && d.time > 0)
     .sort((a, b) => a.time - b.time)
 }
 
 async function loadBybit(sym: string): Promise<{ time: number; value: number }[]> {
   const s = normSymbol(sym)
-  // Bybit v5: openInterestValue — в контрактах (USD), не нужно множить
+  // Bybit v5 возвращает данные от новых к старым — нужен reverse()
   const url = `https://api.bybit.com/v5/market/open-interest?category=linear&symbol=${s}&intervalTime=5min&limit=200`
   const res = await fetch(url)
-  if (!res.ok) throw new Error(`Bybit ${res.status}`)
+  if (!res.ok) throw new Error(`Bybit OI ${res.status}`)
   const json = await res.json()
+  if (json?.retCode !== 0) throw new Error(`Bybit: ${json?.retMsg ?? 'unknown error'}`)
   const list: { timestamp: string; openInterestValue: string }[] = json?.result?.list ?? []
   return list
     .map(d => ({
-      time:  Math.floor(Number(d.timestamp) / 1000),
+      // timestamp приходит в миллисекундах (строка)
+      time:  Math.floor(parseInt(d.timestamp, 10) / 1000),
       value: parseFloat(d.openInterestValue),
     }))
-    .filter(d => isFinite(d.value) && !isNaN(d.value) && d.value > 0)
+    .filter(d => isFinite(d.value) && d.value > 0 && d.time > 0)
+    // Bybit отдаёт от новых к старым — разворачиваем
+    .reverse()
     .sort((a, b) => a.time - b.time)
 }
 
@@ -95,8 +99,13 @@ async function loadOI() {
 
     if (!points.length) { error.value = 'No data'; loading.value = false; return }
 
+    // Дедупликация по timestamp
     const seen  = new Set<number>()
-    const dedup = points.filter(p => { if (seen.has(p.time)) return false; seen.add(p.time); return true })
+    const dedup = points.filter(p => {
+      if (seen.has(p.time)) return false
+      seen.add(p.time)
+      return true
+    })
     dedup.sort((a, b) => a.time - b.time)
 
     series.setData(
@@ -106,9 +115,7 @@ async function loadOI() {
       }))
     )
 
-    // Обновляем форматтер оси Y на основе реальных данных
-    const maxVal = Math.max(...dedup.map(p => p.value))
-    const prec = maxVal >= 1e9 ? 3 : maxVal >= 1e6 ? 2 : 1
+    // Обновляем форматтер с учётом реального диапазона значений
     chart?.applyOptions({
       localization: {
         priceFormatter: (v: number) => fmtOI(v),
@@ -135,6 +142,7 @@ onMounted(() => {
     lineColor: '#4f98a3',
     topColor:  'rgba(79,152,163,0.3)',
     bottomColor: 'rgba(79,152,163,0)',
+    priceFormat: { type: 'custom', formatter: (v: number) => fmtOI(v), minMove: 1 },
   })
   loadOI()
   timer = setInterval(loadOI, 60_000)

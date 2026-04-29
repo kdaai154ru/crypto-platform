@@ -1,7 +1,7 @@
 <!-- apps/frontend/components/widgets/MarketOverviewWidget.vue -->
 <template>
   <div class="mo-wrapper">
-    <!-- Верхняя панель: TF-селекторы + добавить символ -->
+    <!-- Верхняя панель -->
     <div class="mo-controls">
       <div class="tf-group">
         <span class="tf-label">Vol</span>
@@ -15,13 +15,14 @@
           <option v-for="tf in TF_OPTIONS" :key="tf" :value="tf">{{ tf }}</option>
         </select>
       </div>
-      <button class="icon-btn" title="Add symbols" @click="showPicker = !showPicker">＋</button>
+      <button class="icon-btn" title="Add symbols" @click="openPicker">⊞ {{ selectedSymbols.length }}</button>
       <button class="refresh-btn" @click="loadAll" :disabled="loading">↻</button>
     </div>
 
     <!-- SymbolPicker (раскрывается) -->
     <div v-if="showPicker" class="mo-picker-wrap">
-      <SymbolPicker v-model="selectedSymbols" :max="20" :show-top-n="true" />
+      <div v-if="symbolsLoading" class="mo-picker-loading">Загрузка списка…</div>
+      <SymbolPicker v-else v-model="selectedSymbols" :max="20" :show-top-n="true" />
       <button class="apply-btn" @click="applySymbols">Apply</button>
     </div>
 
@@ -54,12 +55,13 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import type { NormalizedTicker } from '@crypto-platform/types'
 import { useWsClient } from '~/composables/useWsClient'
-import { loadSymbols } from '~/composables/useSymbolSearch'
+import { loadSymbols, allSymbols } from '~/composables/useSymbolSearch'
 import SymbolPicker from '~/components/SymbolPicker.vue'
 
 const DEFAULT_SYMS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT']
 const selectedSymbols = ref<string[]>([...DEFAULT_SYMS])
-const showPicker = ref(false)
+const showPicker    = ref(false)
+const symbolsLoading = ref(false)
 
 const TF_OPTIONS = ['1m','3m','5m','15m','30m','1h','4h','8h','12h','1d','3d','1w'] as const
 type TF = typeof TF_OPTIONS[number]
@@ -148,6 +150,16 @@ async function loadAll() {
   loading.value = false
 }
 
+async function openPicker() {
+  showPicker.value = !showPicker.value
+  // Если символы ещё не загружены — грузим с индикатором
+  if (showPicker.value && allSymbols.value.length === 0) {
+    symbolsLoading.value = true
+    await loadSymbols()
+    symbolsLoading.value = false
+  }
+}
+
 function applySymbols() {
   showPicker.value = false
   loadAll()
@@ -182,6 +194,7 @@ function fmtVol(n: number): string {
 let restTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
+  // Загружаем символы фоново сразу — чтобы пикер не тормозил при открытии
   loadSymbols()
   loadAll()
   restTimer = setInterval(loadAll, 60_000)
@@ -228,6 +241,10 @@ onUnmounted(() => {
   flex-shrink: 0;
   max-height: 300px;
   overflow-y: auto;
+}
+.mo-picker-loading {
+  padding: 16px; text-align: center;
+  font-size: 11px; color: var(--color-text-faint);
 }
 .apply-btn {
   width: 100%; font-size: 11px; padding: 4px;
