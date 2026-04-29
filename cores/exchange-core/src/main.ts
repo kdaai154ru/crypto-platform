@@ -12,10 +12,17 @@ import {
 } from '@crypto-platform/metrics';
 
 const DEFAULT_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx'];
+
+// FIX: DEFAULT_SYMBOLS — symbols to start streaming immediately on boot
+// without waiting for a frontend client to send sub:request.
+// This ensures data flows into Valkey streams from the very first second.
+const DEFAULT_SYMBOLS = ['BTC/USDT', 'ETH/USDT'];
+
 const env = loadEnv(
   BaseSchema.merge(ValkeySchema).merge(
     z.object({
       EXCHANGE_LIST: z.string().optional(),
+      // FIX: individual metrics port for exchange-core (not shared METRICS_PORT)
       METRICS_PORT: z.coerce.number().default(4002),
     })
   )
@@ -75,6 +82,10 @@ function handleStreamStart(symbol: string, channels: string[]): void {
         .map((c) => (c.split(':')[2] ?? '1m') as Timeframe)
     ),
   ];
+  // FIX: if no OHLCV timeframe requested explicitly, default to 1m so candle widget has data
+  if (ohlcvTfs.length === 0 && (chs.length === 0)) {
+    ohlcvTfs.push('1m' as Timeframe);
+  }
 
   for (const [, conn] of connectors) {
     if (needTicker)
@@ -189,6 +200,15 @@ async function start(): Promise<void> {
   // FIX #2: publish exchange:ready AFTER message handler and subscriptions are set up
   log.info('publishing exchange:ready');
   await valkey.publish('exchange:ready', JSON.stringify({ exchanges: exList }));
+
+  // FIX: start default symbol streams immediately on boot so data flows
+  // into Valkey without waiting for a frontend client to connect and
+  // send sub:request. subscription-core will also subscribe these via
+  // setAlwaysOn if configured, but this guarantees data from second 0.
+  log.info({ symbols: DEFAULT_SYMBOLS }, 'starting default symbol streams');
+  for (const sym of DEFAULT_SYMBOLS) {
+    handleStreamStart(sym, []);
+  }
 
   hbTimer = setInterval(() => {
     hb.set('heartbeat:exchange-core', Date.now().toString(), 'EX', 30)

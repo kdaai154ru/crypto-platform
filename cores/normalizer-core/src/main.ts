@@ -22,8 +22,11 @@ function setupSubscriptions(): void {
   });
 }
 
+// FIX: resubscribe on EVERY ready event — covers both initial connect
+// and Valkey reconnects. Without this, if Valkey was already connected
+// before 'ready' handler registration, subscriptions were never set up.
 sub.on('ready', () => {
-  log.info('sub reconnected — resubscribing to raw:* channels');
+  log.info('sub ready — subscribing to raw:* channels');
   setupSubscriptions();
 });
 

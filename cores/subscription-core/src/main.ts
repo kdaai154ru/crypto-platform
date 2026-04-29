@@ -39,7 +39,19 @@ function replayToExchange(): void {
   pub.publish('stream:replay', JSON.stringify({ pairs: active }));
 }
 
-sub.subscribe('sub:request', 'sub:release', 'exchange:ready', (e: unknown) => { if (e) log.error(e); });
+function setupSubscriptions(): void {
+  sub.subscribe('sub:request', 'sub:release', 'exchange:ready', (e: unknown) => {
+    if (e) log.error(e, 'subscribe error');
+  });
+}
+
+// FIX: resubscribe on EVERY ready event — covers initial connect and Valkey reconnects.
+// Previously only subscribed once inline without a ready handler,
+// so Valkey reconnects caused permanent loss of sub:request/exchange:ready subscriptions.
+sub.on('ready', () => {
+  log.info('sub ready — resubscribing to control channels');
+  setupSubscriptions();
+});
 
 sub.on('message', (ch: string, msg: string) => {
   try {

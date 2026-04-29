@@ -41,73 +41,71 @@ const registry = new ModuleRegistry(log, {
 });
 const broadcaster = new StatusBroadcaster(valkey, log);
 
+async function buildAndBroadcast(): Promise<void> {
+  let pairsRaw: string | null = null;
+  let clientsRaw: string | null = null;
+  let exchangesRaw: string | null = null;
+  try {
+    [pairsRaw, clientsRaw, exchangesRaw] = await Promise.all([
+      hbValkey.get('stat:active_pairs'),
+      hbValkey.get('stat:active_clients'),
+      hbValkey.get('system:status:exchanges'),
+    ]);
+  } catch (err) {
+    log.error({ err }, 'Failed to fetch stats from Valkey');
+    return;
+  }
+
+  const activePairs   = pairsRaw   ? parseInt(pairsRaw, 10)   : 0;
+  const activeClients = clientsRaw ? parseInt(clientsRaw, 10) : 0;
+
+  // FIX: если exchange-core ещё не писал в system:status:exchanges,
+  // строим fallback-статусы из состояния модуля exchange-core в registry.
+  let exchanges: ExchangeState[] = [];
+  if (exchangesRaw) {
+    try {
+      const parsed = JSON.parse(exchangesRaw) as unknown;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        exchanges = parsed as ExchangeState[];
+      }
+    } catch (err) {
+      log.error({ err, exchangesRaw }, 'Failed to parse exchanges JSON');
+    }
+  }
+
+  if (exchanges.length === 0) {
+    const exchangeModule = registry.get('exchange-core');
+    if (exchangeModule && (exchangeModule.status === 'online' || exchangeModule.status === 'degraded')) {
+      log.warn('system:status:exchanges is empty, using fallback from exchange-core module status');
+      exchanges = [
+        { id: 'binance', status: exchangeModule.status === 'online' ? 'online' : 'degraded', lastHeartbeat: exchangeModule.lastHeartbeat, uptimeMs: exchangeModule.uptimeMs },
+        { id: 'bybit',   status: exchangeModule.status === 'online' ? 'online' : 'degraded', lastHeartbeat: exchangeModule.lastHeartbeat, uptimeMs: exchangeModule.uptimeMs },
+        { id: 'okx',     status: exchangeModule.status === 'online' ? 'online' : 'degraded', lastHeartbeat: exchangeModule.lastHeartbeat, uptimeMs: exchangeModule.uptimeMs },
+      ];
+    }
+  }
+
+  activePairsGauge.set(activePairs);
+  activeClientsGauge.set(activeClients);
+
+  const modules = registry.all();
+  for (const m of modules) {
+    const statusValue =
+      m.status === 'online'     ? 1
+      : m.status === 'degraded'   ? 0.5
+      : m.status === 'restarting' ? 0.25
+      : 0;
+    moduleStatusGauge.set({ module: m.id }, statusValue);
+    moduleUptimeGauge.set({ module: m.id }, m.uptimeMs / 1000);
+  }
+
+  await broadcaster.broadcast(registry.all(), exchanges, activePairs, activeClients);
+}
+
 const monitor = new HealthMonitor(
   registry,
   hbValkey,
-  async () => {
-    let pairsRaw: string | null = null;
-    let clientsRaw: string | null = null;
-    let exchangesRaw: string | null = null;
-    try {
-      [pairsRaw, clientsRaw, exchangesRaw] = await Promise.all([
-        hbValkey.get('stat:active_pairs'),
-        hbValkey.get('stat:active_clients'),
-        hbValkey.get('system:status:exchanges'),
-      ]);
-    } catch (err) {
-      log.error({ err }, 'Failed to fetch stats from Valkey');
-      return;
-    }
-
-    const activePairs   = pairsRaw   ? parseInt(pairsRaw, 10)   : 0;
-    const activeClients = clientsRaw ? parseInt(clientsRaw, 10) : 0;
-
-    // FIX: если exchange-core ещё не писал в system:status:exchanges,
-    // строим fallback-статусы из состояния модуля exchange-core в registry.
-    // Это гарантирует что exchanges[] никогда не будет пустым пока exchange-core online.
-    let exchanges: ExchangeState[] = [];
-    if (exchangesRaw) {
-      try {
-        const parsed = JSON.parse(exchangesRaw) as unknown;
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          exchanges = parsed as ExchangeState[];
-        }
-      } catch (err) {
-        log.error({ err, exchangesRaw }, 'Failed to parse exchanges JSON');
-      }
-    }
-
-    // Fallback: если exchanges пустой (exchange-core не писал в Valkey),
-    // генерируем синтетические статусы на основе heartbeat exchange-core из registry.
-    if (exchanges.length === 0) {
-      const exchangeModule = registry.get('exchange-core');
-      if (exchangeModule && (exchangeModule.status === 'online' || exchangeModule.status === 'degraded')) {
-        // exchange-core живой но не опубликовал детали — показываем как online без деталей
-        log.warn('system:status:exchanges is empty, using fallback from exchange-core module status');
-        exchanges = [
-          { id: 'binance', status: exchangeModule.status === 'online' ? 'online' : 'degraded', lastHeartbeat: exchangeModule.lastHeartbeat, uptimeMs: exchangeModule.uptimeMs },
-          { id: 'bybit',   status: exchangeModule.status === 'online' ? 'online' : 'degraded', lastHeartbeat: exchangeModule.lastHeartbeat, uptimeMs: exchangeModule.uptimeMs },
-          { id: 'okx',     status: exchangeModule.status === 'online' ? 'online' : 'degraded', lastHeartbeat: exchangeModule.lastHeartbeat, uptimeMs: exchangeModule.uptimeMs },
-        ];
-      }
-    }
-
-    activePairsGauge.set(activePairs);
-    activeClientsGauge.set(activeClients);
-
-    const modules = registry.all();
-    for (const m of modules) {
-      const statusValue =
-        m.status === 'online'     ? 1
-        : m.status === 'degraded'   ? 0.5
-        : m.status === 'restarting' ? 0.25
-        : 0;
-      moduleStatusGauge.set({ module: m.id }, statusValue);
-      moduleUptimeGauge.set({ module: m.id }, m.uptimeMs / 1000);
-    }
-
-    await broadcaster.broadcast(registry.all(), exchanges, activePairs, activeClients);
-  },
+  buildAndBroadcast,
   log
 );
 
@@ -143,6 +141,12 @@ async function start() {
   log.info({ port: env.METRICS_PORT }, 'Metrics server started');
 
   monitor.start();
+
+  // FIX: publish an initial broadcast immediately on start so the first
+  // WebSocket client that connects doesn't have to wait up to 5 seconds
+  // for the HealthMonitor tick to write system:status:latest.
+  buildAndBroadcast().catch((err) => log.warn({ err }, 'Initial broadcast failed (non-fatal)'));
+
   const api = Fastify({ logger: false });
 
   api.addHook('onRequest', ipWhitelist);
