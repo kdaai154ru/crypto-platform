@@ -11,18 +11,31 @@ import {
   type MetricsServer,
 } from '@crypto-platform/metrics';
 
-const DEFAULT_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx'];
+// #1 Expanded exchange list: 11 most stable exchanges
+// priority 1 = full WS, priority 2 = WS with fallback, priority 3 = REST polling
+const EXCHANGES_CONFIG: { id: ExchangeId; priority: 1 | 2 | 3; hasWs: boolean }[] = [
+  { id: 'binance',    priority: 1, hasWs: true  },
+  { id: 'bybit',      priority: 1, hasWs: true  },
+  { id: 'okx',        priority: 1, hasWs: true  },
+  { id: 'gate',       priority: 2, hasWs: true  },
+  { id: 'kucoin',     priority: 2, hasWs: true  },
+  { id: 'mexc',       priority: 2, hasWs: true  },
+  { id: 'bitget',     priority: 2, hasWs: true  },
+  { id: 'htx',        priority: 3, hasWs: true  },
+  { id: 'coinbase',   priority: 3, hasWs: false },
+  { id: 'kraken',     priority: 3, hasWs: true  },
+  { id: 'cryptocom',  priority: 3, hasWs: false },
+];
+
+const DEFAULT_EXCHANGES: ExchangeId[] = EXCHANGES_CONFIG.map(e => e.id);
 
 // FIX: DEFAULT_SYMBOLS — symbols to start streaming immediately on boot
-// without waiting for a frontend client to send sub:request.
-// This ensures data flows into Valkey streams from the very first second.
 const DEFAULT_SYMBOLS = ['BTC/USDT', 'ETH/USDT'];
 
 const env = loadEnv(
   BaseSchema.merge(ValkeySchema).merge(
     z.object({
       EXCHANGE_LIST: z.string().optional(),
-      // FIX: individual metrics port for exchange-core (not shared METRICS_PORT)
       METRICS_PORT: z.coerce.number().default(4002),
     })
   )
@@ -46,14 +59,19 @@ valkey.on('error', (e: Error) => log.warn({ err: e.message }, 'valkey error'));
 sub.on('error',   (e: Error) => log.warn({ err: e.message }, 'sub error'));
 hb.on('error',    (e: Error) => log.warn({ err: e.message }, 'hb error'));
 
+// #1: respect EXCHANGE_LIST env override, otherwise use all 11
 const exList: ExchangeId[] =
   env.EXCHANGE_LIST?.split(',').map((s: string) => s.trim() as ExchangeId)
   ?? DEFAULT_EXCHANGES;
 
+// REST-only exchanges — polled every 3s instead of WS
+const REST_ONLY_EXCHANGES = new Set(
+  EXCHANGES_CONFIG.filter(e => !e.hasWs).map(e => e.id)
+);
+
 const connectors = new Map<ExchangeId, ExchangeConnector>();
 const activeSymbols = new Set<string>();
 
-// FIX #12: zod schemas for stream control messages
 const StreamStartSchema = z.object({
   symbol: z.string().min(1),
   channels: z.array(z.string()).default([]),
@@ -82,16 +100,16 @@ function handleStreamStart(symbol: string, channels: string[]): void {
         .map((c) => (c.split(':')[2] ?? '1m') as Timeframe)
     ),
   ];
-  // FIX: if no OHLCV timeframe requested explicitly, default to 1m so candle widget has data
   if (ohlcvTfs.length === 0 && (chs.length === 0)) {
     ohlcvTfs.push('1m' as Timeframe);
   }
 
-  for (const [, conn] of connectors) {
+  for (const [id, conn] of connectors) {
+    const isRestOnly = REST_ONLY_EXCHANGES.has(id);
     if (needTicker)
       conn.watchTicker(symbol)
           .catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchTicker failed'));
-    if (needTrades)
+    if (needTrades && !isRestOnly)
       conn.watchTrades(symbol)
           .catch((e: Error) => log.warn({ symbol, err: e.message }, 'watchTrades failed'));
     for (const tf of ohlcvTfs)
@@ -111,10 +129,26 @@ function handleStreamStart(symbol: string, channels: string[]): void {
   log.info({ symbol, chs }, 'streams started');
 }
 
+// #2: Load all active USDT symbols from Binance on boot and cache to Valkey
+async function loadAndCacheUsdtSymbols(): Promise<void> {
+  try {
+    log.info('Loading all USDT symbols from Binance...');
+    const res = await fetch('https://api.binance.com/api/v3/exchangeInfo');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data: { symbols: { symbol: string; status: string; quoteAsset: string }[] } = await res.json();
+    const usdtSymbols = data.symbols
+      .filter(s => s.quoteAsset === 'USDT' && s.status === 'TRADING')
+      .map(s => s.symbol);
+    await valkey.set('symbols:usdt:all', JSON.stringify(usdtSymbols), 'EX', 3600);
+    log.info({ count: usdtSymbols.length }, 'USDT symbols cached to Valkey');
+  } catch (e) {
+    log.warn({ err: e }, 'Failed to load USDT symbols, skipping cache');
+  }
+}
+
 let metricsServer: MetricsServer | null = null;
 let hbTimer: ReturnType<typeof setInterval> | null = null;
 
-// FIX #8: resubscribe on Valkey reconnect
 function subscribeControlChannels(): void {
   sub.subscribe('stream:start', 'stream:stop', 'stream:replay', (e: Error | null | undefined) => {
     if (e) log.error({ err: e }, 'sub.subscribe failed');
@@ -125,6 +159,9 @@ function subscribeControlChannels(): void {
 async function start(): Promise<void> {
   metricsServer = await createMetricsServer(env.METRICS_PORT);
   log.info({ port: env.METRICS_PORT }, 'Metrics server started');
+
+  // #2: cache USDT symbols before accepting connections
+  await loadAndCacheUsdtSymbols();
 
   for (const id of exList) {
     const conn = new ExchangeConnector(
@@ -138,12 +175,12 @@ async function start(): Promise<void> {
     try {
       await conn.connect();
       connectors.set(id, conn);
+      log.info({ id }, 'exchange connected');
     } catch (e) {
-      log.error({ id, err: e }, 'connect failed');
+      log.error({ id, err: e }, 'connect failed — skipping');
     }
   }
 
-  // FIX #2: register message handler BEFORE subscribing and publishing exchange:ready
   sub.on('message', (ch: string, msg: string) => {
     try {
       if (ch === 'stream:start') {
@@ -184,7 +221,6 @@ async function start(): Promise<void> {
     }
   });
 
-  // FIX #8: resubscribe on reconnect
   sub.on('ready', () => {
     log.info('Valkey sub ready, resubscribing to control channels');
     subscribeControlChannels();
@@ -197,14 +233,9 @@ async function start(): Promise<void> {
     });
   });
 
-  // FIX #2: publish exchange:ready AFTER message handler and subscriptions are set up
   log.info('publishing exchange:ready');
   await valkey.publish('exchange:ready', JSON.stringify({ exchanges: exList }));
 
-  // FIX: start default symbol streams immediately on boot so data flows
-  // into Valkey without waiting for a frontend client to connect and
-  // send sub:request. subscription-core will also subscribe these via
-  // setAlwaysOn if configured, but this guarantees data from second 0.
   log.info({ symbols: DEFAULT_SYMBOLS }, 'starting default symbol streams');
   for (const sym of DEFAULT_SYMBOLS) {
     handleStreamStart(sym, []);
@@ -228,6 +259,9 @@ async function start(): Promise<void> {
       .catch((e: Error) => log.warn({ err: e.message }, 'hb status set failed'));
   }, 5_000);
 
+  // #2: refresh USDT symbol cache every hour
+  setInterval(loadAndCacheUsdtSymbols, 3_600_000);
+
   const shutdown = async () => {
     log.info('Shutting down exchange-core...');
     if (hbTimer) clearInterval(hbTimer);
@@ -240,7 +274,7 @@ async function start(): Promise<void> {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  log.info({ exchanges: exList }, 'exchange-core started');
+  log.info({ exchanges: exList, total: connectors.size }, 'exchange-core started');
 }
 
 start().catch((e) => {
