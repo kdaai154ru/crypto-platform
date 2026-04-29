@@ -5,8 +5,28 @@
 // Или через корень: pnpm start:all
 "use strict";
 const path = require("path");
+const { execSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..", "..");
+
+// Resolve pnpm CLI path cross-platform (avoids PNPM.CMD crash on Windows)
+function resolvePnpm() {
+  try {
+    const out = execSync("node --print \"require('path').dirname(process.execPath)\"", { encoding: "utf8" }).trim();
+    // Try node_modules/.bin/pnpm (local) first, then global
+    const candidates = [
+      path.join(ROOT, "node_modules", ".bin", "pnpm.cmd"),
+      path.join(ROOT, "node_modules", ".bin", "pnpm"),
+      path.join(out, "node_modules", "pnpm", "bin", "pnpm.cjs"),
+    ];
+    for (const c of candidates) {
+      try { require("fs").accessSync(c); return c; } catch {}
+    }
+  } catch {}
+  return "pnpm"; // fallback — works on Linux/macOS
+}
+
+const PNPM_CLI = resolvePnpm();
 
 const base = {
   cwd:                       ROOT,
@@ -40,12 +60,9 @@ module.exports = {
     },
 
     // ─── FRONTEND ────────────────────────────────────────────
-    // PRODUCTION: runs pre-built .output bundle
-    // DEVELOPMENT: runs `nuxt dev` with Vite HMR — no rebuild needed on file changes
     {
       ...base,
       name:               "frontend",
-      // production script (default)
       script:             path.join(ROOT, "apps/frontend/.output/server/index.mjs"),
       cwd:                path.join(ROOT, "apps/frontend"),
       max_memory_restart: "1G",
@@ -55,26 +72,20 @@ module.exports = {
         NUXT_PUBLIC_API_URL:   process.env.NUXT_PUBLIC_API_URL || "http://localhost:3010",
         PORT:                  process.env.FRONTEND_PORT        || "3001",
       },
-      // development: override script to use nuxt dev (Vite HMR)
       env_development: {
         NODE_ENV:              "development",
         NUXT_PUBLIC_WS_URL:    process.env.NUXT_PUBLIC_WS_URL  || "ws://localhost:4000",
         NUXT_PUBLIC_API_URL:   process.env.NUXT_PUBLIC_API_URL || "http://localhost:3010",
         PORT:                  process.env.FRONTEND_PORT        || "3001",
-        // PM2 picks up PM2_SCRIPT/PM2_ARGS when NODE_ENV=development
-        // We rely on start-all.ps1 passing --env development
-        // The actual script swap is handled below via the dev override block
       },
     },
 
-    // DEV-ONLY frontend entry — used when start-all.ps1 passes --env development
-    // PM2 matches by name; start-all should start "frontend-dev" in dev mode
-    // and skip "frontend" (production build).
-    // Alternatively: use a single entry with conditional script (see start-all.ps1).
+    // DEV-ONLY frontend — uses node to run pnpm CLI directly (avoids PNPM.CMD crash on Windows)
     {
       name:               "frontend-dev",
-      script:             "pnpm",
-      args:               "dev --port 3001",
+      // On Windows PM2 can't execute .CMD shims — run Node.js with pnpm's JS entry directly
+      script:             "node",
+      args:               `"${PNPM_CLI}" dev --port 3001`,
       cwd:                path.join(ROOT, "apps/frontend"),
       instances:          1,
       exec_mode:          "fork",
